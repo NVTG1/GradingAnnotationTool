@@ -206,7 +206,10 @@ async function buildAnnotatedPDF(studentAnswerText, annotations) {
   const unanchored = cleanAnnotations.filter((a) => !a.anchorText);
   for (const a of unanchored) {
     markerCounter += 1;
-    markers.push({ number: markerCounter, note: `[General] ${a.note}`, type: "comment" });
+    // Note: annotationGenerator already prefixes unanchored notes with the
+    // rubric point description (e.g. "[Correct placement of ammeter...] ...").
+    // Don't add a second, redundant "[General]" label on top of that here.
+    markers.push({ number: markerCounter, note: a.note, type: "comment" });
   }
 
   // --- Legend page ---
