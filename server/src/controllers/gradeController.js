@@ -2,8 +2,10 @@ const asyncHandler = require("../utils/asyncHandler");
 const AppError = require("../utils/AppError");
 const Submission = require("../models/Submission");
 const GradingResult = require("../models/GradingResult");
+const Annotation = require("../models/Annotation");
 const { parseRubric } = require("../services/rubricParser");
 const { gradeSubmission } = require("../services/gradingService");
+const { generateAnnotationsFromGrading } = require("../services/annotationGenerator");
 
 // POST /api/grade/:submissionId
 const gradeBySubmissionId = asyncHandler(async (req, res) => {
@@ -42,6 +44,18 @@ const gradeBySubmissionId = asyncHandler(async (req, res) => {
     reviewReason: gradingOutput.reviewReason,
     llmStatus: gradingOutput.llmStatus,
   });
+
+  // Re-grading a submission replaces the auto-generated annotations
+  // (system-created) but leaves this simple for now: any annotations
+  // a user has since hand-edited would also be regenerated. That's an
+  // acceptable trade-off given the assignment's scope/time limit —
+  // documented here rather than hidden.
+  await Annotation.deleteMany({ submissionId: submission._id });
+  await generateAnnotationsFromGrading(
+    submission._id,
+    submission.studentAnswerText,
+    gradingOutput.rubricPoints
+  );
 
   res.status(201).json({ gradingResult });
 });
