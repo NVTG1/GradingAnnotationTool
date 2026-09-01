@@ -26,7 +26,7 @@ const AnnotationSchema = new mongoose.Schema(
     // studentAnswerText. Storing the actual matched text (not just
     // offsets) makes annotations resilient to minor re-extraction
     // differences and easy to debug/display.
-    anchorText: { type: String, default5: "" },
+    anchorText: { type: String, default: "" },
     startOffset: { type: Number, required: true },
     endOffset: { type: Number, required: true },
 
