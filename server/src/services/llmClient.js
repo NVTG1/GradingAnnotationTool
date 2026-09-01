@@ -6,11 +6,11 @@
 
 const AppError = require("../utils/AppError");
 
-async function gradeWithLLM(prompt, { forceScenario } = {}) {
+async function gradeWithLLM(prompt, { forceScenario, mode = "grade" } = {}) {
   const provider = process.env.LLM_PROVIDER || "mock";
 
   if (provider === "mock") {
-    return mockLLM(prompt, forceScenario);
+    return mockLLM(prompt, forceScenario, mode);
   }
 
   if (provider === "groq") {
@@ -24,13 +24,26 @@ async function gradeWithLLM(prompt, { forceScenario } = {}) {
 // `forceScenario` lets our tests deterministically trigger each
 // required test case (failure, malformed output, etc.) without
 // depending on a real API's behavior.
-async function mockLLM(prompt, forceScenario) {
+// `mode` distinguishes a rubric-parsing call from a grading call,
+// since the two need differently-shaped mock responses.
+async function mockLLM(prompt, forceScenario, mode) {
   if (forceScenario === "api_failure") {
     throw new AppError("Simulated LLM API failure", 502, "LLM_UNAVAILABLE");
   }
 
   if (forceScenario === "malformed") {
     return "This is not valid JSON at all {{{";
+  }
+
+  if (mode === "rubric") {
+    return JSON.stringify({
+      rubricPoints: [
+        { pointId: "p1", description: "Defines the core concept correctly", maxMarks: 3 },
+        { pointId: "p2", description: "Explains how/why it works", maxMarks: 3 },
+        { pointId: "p3", description: "Gives a correct, relevant example", maxMarks: 2 },
+        { pointId: "p4", description: "Clarity and structure of the answer", maxMarks: 2 },
+      ],
+    });
   }
 
   if (forceScenario === "over_max") {

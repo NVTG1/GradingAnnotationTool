@@ -2,6 +2,7 @@ const express = require("express");
 const cors = require("cors");
 
 const uploadRoutes = require("./routes/upload");
+const gradeRoutes = require("./routes/grade");
 const errorHandler = require("./middleware/errorHandler");
 
 const app = express();
@@ -17,6 +18,7 @@ app.get("/api/health", (req, res) => {
 
 // --- Routes ---
 app.use("/api/upload", uploadRoutes);
+app.use("/api/grade", gradeRoutes);
 
 // --- Error handler ---
 // This MUST be registered last. Express identifies error-handling
