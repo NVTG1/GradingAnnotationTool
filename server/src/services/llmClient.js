@@ -270,6 +270,18 @@ function heuristicGrade(prompt) {
     } else if (overlap >= 0.25) {
       status = "partial";
       awardedMarks = Math.round(point.maxMarks / 2);
+    } else if (scopedStudentText.trim().length > 0) {
+      // The student wrote something for this question, but none of the
+      // rubric point's keywords show up in it — that's a wrong-reasoning
+      // ("incorrect") answer, not an absent ("missing") one. The
+      // rubric-point status enum and annotationGenerator (which maps
+      // "incorrect" -> a strikethrough annotation, vs. "missing" -> an
+      // unanchored comment) were already built to distinguish these two
+      // cases; this heuristic previously collapsed them both into
+      // "missing", which meant the assignment's "incorrect answer" test
+      // case couldn't actually be exercised through the mock.
+      status = "incorrect";
+      awardedMarks = 0;
     } else {
       status = "missing";
       awardedMarks = 0;
@@ -301,6 +313,8 @@ function heuristicGrade(prompt) {
         ? "Covers this point adequately."
         : status === "partial"
         ? `Partially addresses "${point.description}" — expand with more detail.`
+        : status === "incorrect"
+        ? `The answer doesn't correctly address "${point.description}" — review and correct this point.`
         : `No clear evidence of "${point.description}" in the answer.`;
 
     return {
