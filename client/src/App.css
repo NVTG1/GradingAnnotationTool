@@ -1,0 +1,623 @@
+/*
+  Design concept: a teacher's grading ledger.
+  This is an internal, viva-graded tool — functionality over decoration —
+  so the design spend went into one place: literally using red/green/amber
+  pen colors for annotation markers, because that's what a teacher's pen
+  actually does to a paper. Everything else (layout, type, spacing) stays
+  quiet and gets out of the way of the rubric table and the annotated text,
+  which are the two things actually being graded here.
+*/
+
+:root {
+  --paper: #efeade;
+  --paper-white: #fbf9f3;
+  --ink: #1e2a3a;
+  --ink-soft: #5b6472;
+  --rule: #d9d2bd;
+  --red-pen: #a8362b;
+  --red-pen-soft: #f1ded9;
+  --green-pen: #3f6b4a;
+  --green-pen-soft: #dde8de;
+  --amber-pen: #a8791f;
+  --amber-pen-soft: #f0e6cd;
+  --gray-pen: #7a7362;
+  --gray-pen-soft: #eae6d9;
+
+  --font-display: "Fraunces", Georgia, serif;
+  --font-body: "Inter", -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  margin: 0 0 0.3em;
+}
+
+h1 {
+  font-size: 1.7rem;
+}
+
+h2 {
+  font-size: 1.2rem;
+  margin-top: 2rem;
+}
+
+h3 {
+  font-size: 0.95rem;
+  color: var(--ink-soft);
+}
+
+.lede {
+  color: var(--ink-soft);
+  max-width: 62ch;
+  margin: 0 0 1.5rem;
+}
+
+.muted {
+  color: var(--ink-soft);
+}
+
+/* --- App shell --- */
+
+.app-shell {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  min-height: 100vh;
+}
+
+@media (max-width: 720px) {
+  .app-shell {
+    grid-template-columns: 1fr;
+  }
+}
+
+.sidebar {
+  background: var(--ink);
+  color: var(--paper-white);
+  display: flex;
+  flex-direction: column;
+  padding: 1.5rem 1.2rem;
+  gap: 2rem;
+}
+
+.sidebar-mark {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+}
+
+.stamp {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  border: 2px solid var(--red-pen);
+  color: var(--red-pen);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 0.85rem;
+  transform: rotate(-8deg);
+  flex-shrink: 0;
+}
+
+.wordmark {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 1.05rem;
+}
+
+.wordmark-sub {
+  font-size: 0.72rem;
+  color: #9aa5b3;
+}
+
+.sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.sidebar-tab {
+  text-align: left;
+  background: none;
+  border: none;
+  color: #c3cad4;
+  padding: 0.6rem 0.7rem;
+  border-radius: 4px;
+  font-family: var(--font-body);
+  font-size: 0.92rem;
+  cursor: pointer;
+}
+
+.sidebar-tab:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.sidebar-tab.active {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  font-weight: 500;
+}
+
+.sidebar-foot {
+  margin-top: auto;
+  font-size: 0.75rem;
+  color: #7c869a;
+  line-height: 1.5;
+}
+
+.app-main {
+  padding: 2.5rem 3rem;
+  max-width: 1000px;
+}
+
+@media (max-width: 720px) {
+  .app-main {
+    padding: 1.5rem;
+  }
+}
+
+.panel {
+  background: var(--paper-white);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  padding: 2rem;
+}
+
+/* --- Upload form --- */
+
+.upload-grid {
+  display: grid;
+  gap: 1.2rem;
+  margin-bottom: 1rem;
+}
+
+.upload-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  border-bottom: 1px solid var(--rule);
+  padding-bottom: 0.9rem;
+}
+
+.upload-field-label {
+  font-weight: 600;
+}
+
+.upload-field-hint {
+  font-size: 0.8rem;
+  color: var(--ink-soft);
+  margin-bottom: 0.4rem;
+}
+
+.upload-filename {
+  font-size: 0.8rem;
+  color: var(--green-pen);
+  margin-top: 0.3rem;
+}
+
+.preview-block {
+  margin-top: 2rem;
+  border-top: 1px solid var(--rule);
+  padding-top: 1.5rem;
+}
+
+.preview-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1.2rem;
+  margin-bottom: 1.5rem;
+}
+
+@media (max-width: 720px) {
+  .preview-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.preview-grid h3 {
+  margin-bottom: 0.3rem;
+}
+
+.preview-grid p {
+  font-size: 0.85rem;
+  color: var(--ink-soft);
+  max-height: 90px;
+  overflow-y: auto;
+}
+
+.grade-controls {
+  display: flex;
+  align-items: flex-end;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.scenario-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 0.8rem;
+  color: var(--ink-soft);
+}
+
+.scenario-picker select {
+  font-family: var(--font-body);
+  padding: 0.5rem;
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  background: var(--paper-white);
+  min-width: 240px;
+}
+
+/* --- Buttons --- */
+
+button {
+  font-family: var(--font-body);
+  cursor: pointer;
+}
+
+.btn-primary {
+  background: var(--ink);
+  color: var(--paper-white);
+  border: none;
+  padding: 0.65rem 1.3rem;
+  border-radius: 3px;
+  font-size: 0.9rem;
+  font-weight: 500;
+}
+
+.btn-primary:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.btn-secondary {
+  background: var(--paper-white);
+  color: var(--ink);
+  border: 1px solid var(--ink);
+  padding: 0.6rem 1.1rem;
+  border-radius: 3px;
+  font-size: 0.85rem;
+  text-decoration: none;
+  font-weight: 500;
+}
+
+.btn-ghost {
+  background: none;
+  border: 1px solid var(--rule);
+  padding: 0.4rem 0.8rem;
+  border-radius: 3px;
+  font-size: 0.8rem;
+  color: var(--ink-soft);
+}
+
+.btn-ghost:hover {
+  border-color: var(--ink-soft);
+  color: var(--ink);
+}
+
+.btn-danger:hover {
+  border-color: var(--red-pen);
+  color: var(--red-pen);
+}
+
+/* --- Errors --- */
+
+.error-banner {
+  background: var(--red-pen-soft);
+  color: var(--red-pen);
+  border: 1px solid var(--red-pen);
+  padding: 0.7rem 1rem;
+  border-radius: 3px;
+  font-size: 0.85rem;
+  margin: 1rem 0;
+}
+
+.top-error {
+  max-width: 1000px;
+}
+
+/* --- Grading result --- */
+
+.score-row {
+  display: flex;
+  align-items: center;
+  gap: 2rem;
+  padding-bottom: 1.5rem;
+  border-bottom: 1px solid var(--rule);
+}
+
+.score-stamp {
+  border: 3px solid var(--ink);
+  border-radius: 50%;
+  width: 110px;
+  height: 110px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transform: rotate(-4deg);
+  font-family: var(--font-display);
+}
+
+.score-value {
+  font-size: 2.1rem;
+  font-weight: 700;
+}
+
+.score-max {
+  font-size: 0.95rem;
+  color: var(--ink-soft);
+  margin-left: 0.1rem;
+}
+
+.score-meta {
+  flex: 1;
+}
+
+.confidence-line {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-size: 0.8rem;
+  color: var(--ink-soft);
+  margin-bottom: 0.6rem;
+}
+
+.confidence-bar {
+  width: 160px;
+  height: 6px;
+  background: var(--rule);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.confidence-fill {
+  height: 100%;
+  background: var(--green-pen);
+}
+
+.meta-badges {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.review-reason {
+  font-size: 0.8rem;
+  color: var(--amber-pen);
+  margin-top: 0.5rem;
+}
+
+.badge {
+  display: inline-block;
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 0.2rem 0.55rem;
+  border-radius: 3px;
+}
+
+.badge-correct,
+.badge-ok {
+  background: var(--green-pen-soft);
+  color: var(--green-pen);
+}
+
+.badge-partial,
+.badge-repaired,
+.badge-mock {
+  background: var(--amber-pen-soft);
+  color: var(--amber-pen);
+}
+
+.badge-missing,
+.badge-incorrect,
+.badge-failed,
+.badge-review {
+  background: var(--red-pen-soft);
+  color: var(--red-pen);
+}
+
+.rubric-table,
+.history-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 1.5rem;
+  font-size: 0.87rem;
+}
+
+.rubric-table th,
+.rubric-table td,
+.history-table th,
+.history-table td {
+  text-align: left;
+  padding: 0.6rem 0.5rem;
+  border-bottom: 1px solid var(--rule);
+  vertical-align: top;
+}
+
+.rubric-table th,
+.history-table th {
+  color: var(--ink-soft);
+  font-weight: 600;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.marks-cell {
+  font-family: var(--font-display);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.evidence-cell {
+  font-style: italic;
+  color: var(--ink-soft);
+  max-width: 220px;
+}
+
+/* --- Annotation editor --- */
+
+.annotation-editor {
+  margin-top: 2.5rem;
+  border-top: 1px solid var(--rule);
+  padding-top: 1.5rem;
+}
+
+.annotation-editor-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.annotated-text {
+  font-family: var(--font-display);
+  font-size: 1.05rem;
+  line-height: 1.9;
+  white-space: pre-wrap;
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  padding: 1.5rem;
+  user-select: text;
+  cursor: text;
+}
+
+mark {
+  background: none;
+  color: inherit;
+  padding: 0 1px;
+}
+
+.ann-underline {
+  border-bottom: 2px solid var(--red-pen);
+}
+
+.ann-box {
+  border: 1.5px solid var(--red-pen);
+  border-radius: 2px;
+  padding: 0 3px;
+}
+
+.ann-strikethrough {
+  text-decoration: line-through;
+  text-decoration-color: var(--red-pen);
+  text-decoration-thickness: 2px;
+}
+
+.ann-comment {
+  border-bottom: 2px dotted var(--amber-pen);
+}
+
+.annotation-draft,
+.annotation-row-editing {
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  padding: 1rem;
+  margin-top: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+
+.annotation-draft-quote {
+  font-style: italic;
+  color: var(--ink-soft);
+}
+
+.annotation-draft label,
+.annotation-row-editing label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.8rem;
+  color: var(--ink-soft);
+}
+
+.annotation-draft select,
+.annotation-draft textarea,
+.annotation-row-editing select,
+.annotation-row-editing textarea {
+  font-family: var(--font-body);
+  padding: 0.5rem;
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  resize: vertical;
+}
+
+.annotation-draft-actions {
+  display: flex;
+  gap: 0.6rem;
+}
+
+.annotation-list {
+  margin-top: 1.5rem;
+}
+
+.annotation-row {
+  display: flex;
+  gap: 0.8rem;
+  align-items: flex-start;
+  padding: 0.8rem 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+.ann-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  margin-top: 0.4rem;
+  flex-shrink: 0;
+  background: var(--red-pen);
+}
+
+.ann-swatch.ann-comment {
+  background: var(--amber-pen);
+  border: none;
+}
+
+.annotation-row-body {
+  flex: 1;
+}
+
+.annotation-row-quote {
+  font-style: italic;
+  color: var(--ink-soft);
+  font-size: 0.9rem;
+}
+
+.annotation-row-note {
+  margin-top: 0.2rem;
+}
+
+.annotation-row-meta {
+  font-size: 0.72rem;
+  color: var(--gray-pen);
+  margin-top: 0.3rem;
+}
+
+.annotation-row-actions {
+  display: flex;
+  gap: 0.4rem;
+  flex-shrink: 0;
+}
