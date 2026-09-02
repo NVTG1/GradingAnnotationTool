@@ -43,7 +43,13 @@ async function mockLLM(prompt, forceScenario, mode) {
     // Deliberately return marks that exceed the max, to test our clamp logic
     return JSON.stringify({
       rubricPoints: [
-        { pointId: "p1", awardedMarks: 999, status: "correct", evidence: "x", feedback: "y" },
+        {
+          pointId: "p1",
+          awardedMarks: 999,
+          status: "correct",
+          evidence: "x",
+          feedback: "y",
+        },
       ],
     });
   }
@@ -72,12 +78,12 @@ function extractRubricFromDocument(prompt) {
   const doc = docMatch ? docMatch[1] : "";
 
   const points = [];
-  let buffer = [];        // accumulates a criterion's wrapped description text
+  let buffer = []; // accumulates a criterion's wrapped description text
   let pendingMarks = null; // a mark value seen on its own line, awaiting a
-                            // possible continuation fragment after it (some
-                            // PDF table extractions place the "Marks" column
-                            // value BETWEEN the two halves of a wrapped
-                            // criterion, e.g. "...the relevant principle/Ohm's" / "1" / "law")
+  // possible continuation fragment after it (some
+  // PDF table extractions place the "Marks" column
+  // value BETWEEN the two halves of a wrapped
+  // criterion, e.g. "...the relevant principle/Ohm's" / "1" / "law")
 
   function flushAsPoint(description, maxMarks) {
     if (maxMarks >= 1 && maxMarks <= 20 && description.length >= 15) {
@@ -133,7 +139,10 @@ function extractRubricFromDocument(prompt) {
       } else {
         // Normal case: buffer may hold earlier wrapped lines of THIS same
         // criterion, ending here with its mark value.
-        flushAsPoint([...buffer, inline[1].trim()].join(" ").trim(), Number(inline[2]));
+        flushAsPoint(
+          [...buffer, inline[1].trim()].join(" ").trim(),
+          Number(inline[2]),
+        );
       }
       buffer = [];
       pendingMarks = null;
@@ -159,10 +168,22 @@ function extractRubricFromDocument(prompt) {
   // Fallback for documents that don't have a parseable "text + number"
   // rubric layout (e.g. short synthetic strings used in unit tests).
   return [
-    { pointId: "p1", description: "Defines the core concept correctly", maxMarks: 3 },
+    {
+      pointId: "p1",
+      description: "Defines the core concept correctly",
+      maxMarks: 3,
+    },
     { pointId: "p2", description: "Explains how/why it works", maxMarks: 3 },
-    { pointId: "p3", description: "Gives a correct, relevant example", maxMarks: 2 },
-    { pointId: "p4", description: "Clarity and structure of the answer", maxMarks: 2 },
+    {
+      pointId: "p3",
+      description: "Gives a correct, relevant example",
+      maxMarks: 2,
+    },
+    {
+      pointId: "p4",
+      description: "Clarity and structure of the answer",
+      maxMarks: 2,
+    },
   ];
 }
 
@@ -172,16 +193,58 @@ function extractRubricFromDocument(prompt) {
 // prompt string via regex. This mirrors gradingService.buildPrompt's fixed
 // format exactly; if that format changes, update these regexes too.
 const STOPWORDS = new Set([
-  "the","and","for","that","with","this","from","have","are","was","were",
-  "will","would","could","should","their","there","then","than","into",
-  "your","which","when","what","where","does","not","but","also","such",
-  "each","been","being","they","them","these","those","about","above",
-  "between","through","during","before","after","because","while",
+  "the",
+  "and",
+  "for",
+  "that",
+  "with",
+  "this",
+  "from",
+  "have",
+  "are",
+  "was",
+  "were",
+  "will",
+  "would",
+  "could",
+  "should",
+  "their",
+  "there",
+  "then",
+  "than",
+  "into",
+  "your",
+  "which",
+  "when",
+  "what",
+  "where",
+  "does",
+  "not",
+  "but",
+  "also",
+  "such",
+  "each",
+  "been",
+  "being",
+  "they",
+  "them",
+  "these",
+  "those",
+  "about",
+  "above",
+  "between",
+  "through",
+  "during",
+  "before",
+  "after",
+  "because",
+  "while",
 ]);
 
 function significantWords(text) {
-  return (text.toLowerCase().match(/[a-z]+/g) || [])
-    .filter((w) => w.length > 3 && !STOPWORDS.has(w));
+  return (text.toLowerCase().match(/[a-z]+/g) || []).filter(
+    (w) => w.length > 3 && !STOPWORDS.has(w),
+  );
 }
 
 // Splits a document into per-question sections when it's laid out with
@@ -206,9 +269,11 @@ function splitIntoSections(text) {
 function heuristicGrade(prompt) {
   const modelMatch = prompt.match(/MODEL ANSWER:\n([\s\S]*?)\n\nRUBRIC POINTS/);
   const rubricMatch = prompt.match(
-    /RUBRIC POINTS \(award marks only up to maxMarks for each\):\n([\s\S]*?)\n\nSTUDENT ANSWER:/
+    /RUBRIC POINTS \(award marks only up to maxMarks for each\):\n([\s\S]*?)\n\nSTUDENT ANSWER:/,
   );
-  const studentMatch = prompt.match(/STUDENT ANSWER:\n([\s\S]*?)\n\nFor each rubric point/);
+  const studentMatch = prompt.match(
+    /STUDENT ANSWER:\n([\s\S]*?)\n\nFor each rubric point/,
+  );
 
   let rubricDefinition = [];
   try {
@@ -232,7 +297,9 @@ function heuristicGrade(prompt) {
   const modelSections = splitIntoSections(modelAnswerText);
   const studentSections = splitIntoSections(studentAnswerText);
   const sectionsUsable =
-    modelSections && studentSections && modelSections.length === studentSections.length;
+    modelSections &&
+    studentSections &&
+    modelSections.length === studentSections.length;
 
   // Split into sentences once so we can quote a real one back as evidence
   // (annotationGenerator anchors annotations by locating evidence as a
@@ -249,7 +316,9 @@ function heuristicGrade(prompt) {
     let scopedStudentText = studentAnswerText;
     let scopedSentences = allSentences;
     if (sectionsUsable) {
-      const sectionIndex = modelSections.findIndex((sec) => sec.includes(point.description));
+      const sectionIndex = modelSections.findIndex((sec) =>
+        sec.includes(point.description),
+      );
       if (sectionIndex !== -1) {
         scopedStudentText = studentSections[sectionIndex];
         scopedSentences = scopedStudentText
@@ -261,7 +330,8 @@ function heuristicGrade(prompt) {
 
     const lowerStudent = scopedStudentText.toLowerCase();
     const matchedKeywords = keywords.filter((k) => lowerStudent.includes(k));
-    const overlap = keywords.length > 0 ? matchedKeywords.length / keywords.length : 0;
+    const overlap =
+      keywords.length > 0 ? matchedKeywords.length / keywords.length : 0;
 
     let status, awardedMarks;
     if (overlap >= 0.6) {
@@ -312,10 +382,10 @@ function heuristicGrade(prompt) {
       status === "correct"
         ? "Covers this point adequately."
         : status === "partial"
-        ? `Partially addresses "${point.description}" — expand with more detail.`
-        : status === "incorrect"
-        ? `The answer doesn't correctly address "${point.description}" — review and correct this point.`
-        : `No clear evidence of "${point.description}" in the answer.`;
+          ? `Partially addresses "${point.description}" — expand with more detail.`
+          : status === "incorrect"
+            ? `The answer doesn't correctly address "${point.description}" — review and correct this point.`
+            : `No clear evidence of "${point.description}" in the answer.`;
 
     return {
       pointId: point.pointId,
@@ -354,11 +424,121 @@ async function callGroq(prompt) {
   }
 
   if (!response.ok) {
-    throw new AppError(`LLM API returned ${response.status}`, 502, "LLM_UNAVAILABLE");
+    throw new AppError(
+      `LLM API returned ${response.status}`,
+      502,
+      "LLM_UNAVAILABLE",
+    );
   }
 
   const data = await response.json();
   return data.choices?.[0]?.message?.content ?? "";
 }
 
-module.exports = { gradeWithLLM };
+// --- Handwritten / scanned answer OCR ---
+// Called by pdfExtractor as a fallback when pdf-parse finds no usable
+// text layer (i.e. the PDF is really just a picture of a handwritten
+// or scanned page). One vision call per page, joined into one string —
+// simpler to reason about than a single multi-image call, and a bad
+// page doesn't necessarily sink the whole submission.
+async function transcribeHandwrittenImages(
+  imageBuffers,
+  { forceScenario } = {},
+) {
+  const provider =
+    process.env.OCR_PROVIDER || process.env.LLM_PROVIDER || "mock";
+  const pageTexts = [];
+  for (const buffer of imageBuffers) {
+    if (provider === "mock") {
+      pageTexts.push(mockTranscribeImage(buffer, forceScenario));
+    } else if (provider === "groq") {
+      pageTexts.push(await callGroqVision(buffer));
+    } else {
+      throw new AppError(
+        `Unknown LLM_PROVIDER: ${provider}`,
+        500,
+        "BAD_CONFIG",
+      );
+    }
+  }
+
+  return pageTexts.join("\n\n");
+}
+
+function mockTranscribeImage(buffer, forceScenario) {
+  if (forceScenario === "vision_failure") {
+    throw new AppError("Simulated vision API failure", 502, "LLM_UNAVAILABLE");
+  }
+  // Deterministic stand-in so tests never depend on a real OCR call or
+  // on what the fixture image actually contains.
+  return `[MOCK OCR TRANSCRIPTION of a ${buffer.length}-byte page image]`;
+}
+
+async function callGroqVision(imageBuffer) {
+  const apiKey = process.env.GROQ_API_KEY;
+  if (!apiKey) {
+    throw new AppError("GROQ_API_KEY not set", 500, "BAD_CONFIG");
+  }
+
+  let response;
+  try {
+    response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        // Vision-capable Groq model. Groq's lineup changes often —
+        // if this id has been retired, check console.groq.com/docs/vision
+        // for the current one and swap it in here.
+        model: "qwen/qwen3.6-27b",
+        temperature: 0,
+        max_completion_tokens: 4096,
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: `
+Transcribe all readable handwritten text in this image.
+
+Important:
+- Preserve the student's original spelling, grammar mistakes, and wording.
+- Do NOT correct the student's answers.
+- Do NOT solve the questions.
+- Preserve question numbers such as Q1, Q2, Q3.
+- Include labels and text inside diagrams when readable.
+- If something cannot be read, write [unclear].
+- Return only the transcription.
+`,
+              },
+              {
+                type: "image_url",
+                image_url: {
+                  url: `data:image/png;base64,${imageBuffer.toString("base64")}`,
+                },
+              },
+            ],
+          },
+        ],
+      }),
+    });
+  } catch (networkErr) {
+    throw new AppError("Vision API unreachable", 502, "LLM_UNAVAILABLE");
+  }
+
+  if (!response.ok) {
+    throw new AppError(
+      `Vision API returned ${response.status}`,
+      502,
+      "LLM_UNAVAILABLE",
+    );
+  }
+
+  const data = await response.json();
+  return data.choices?.[0]?.message?.content ?? "";
+}
+
+module.exports = { gradeWithLLM, transcribeHandwrittenImages };
