@@ -1,9 +1,3 @@
-// The rest of the app never talks to Groq/OpenAI directly — it only
-// calls `gradeWithLLM(prompt)`. That means:
-//  1. Swapping providers (mock <-> real) is a one-line env var change.
-//  2. Our mock can simulate failures/malformed output on demand,
-//     which is REQUIRED by the assignment's test list.
-
 const AppError = require("../utils/AppError");
 
 async function gradeWithLLM(prompt, { forceScenario, mode = "grade" } = {}) {
@@ -20,12 +14,6 @@ async function gradeWithLLM(prompt, { forceScenario, mode = "grade" } = {}) {
   throw new AppError(`Unknown LLM_PROVIDER: ${provider}`, 500, "BAD_CONFIG");
 }
 
-// --- Mock provider ---
-// `forceScenario` lets our tests deterministically trigger each
-// required test case (failure, malformed output, etc.) without
-// depending on a real API's behavior.
-// `mode` distinguishes a rubric-parsing call from a grading call,
-// since the two need differently-shaped mock responses.
 async function mockLLM(prompt, forceScenario, mode) {
   if (forceScenario === "api_failure") {
     throw new AppError("Simulated LLM API failure", 502, "LLM_UNAVAILABLE");
@@ -36,11 +24,12 @@ async function mockLLM(prompt, forceScenario, mode) {
   }
 
   if (mode === "rubric") {
-    return JSON.stringify({ rubricPoints: extractRubricFromDocument(prompt) });
+    return JSON.stringify({
+      rubricPoints: extractRubricFromDocument(prompt),
+    });
   }
 
   if (forceScenario === "over_max") {
-    // Deliberately return marks that exceed the max, to test our clamp logic
     return JSON.stringify({
       rubricPoints: [
         {
@@ -54,40 +43,30 @@ async function mockLLM(prompt, forceScenario, mode) {
     });
   }
 
-  // Default: score each rubric point against the student's answer with a
-  // small keyword-overlap heuristic, instead of returning one fixed canned
-  // response regardless of input. Without this, every submission — a
-  // fully correct answer, an off-topic one, anything — scored identically,
-  // which silently defeats two of the assignment's required test cases
-  // ("fully correct answer" and "an incorrect answer" need to actually
-  // differ). This is intentionally simple (word overlap, not real language
-  // understanding) — good enough to make results vary meaningfully with
-  // input, not a substitute for a real LLM call.
-  return JSON.stringify({ rubricPoints: heuristicGrade(prompt) });
+  return JSON.stringify({
+    rubricPoints: heuristicGrade(prompt),
+  });
 }
 
-// --- Rubric-mode heuristic: extract real rubric criteria from the model-
-// answer document instead of always returning a fixed 4-point placeholder.
-// The model-answer text is embedded in the rubric-parse prompt after a
-// "DOCUMENT:" marker (see rubricParser.buildRubricParsePrompt). Many rubric
-// documents lay out criteria as "<description> <marks>" lines (e.g. inside a
-// "Criterion | Marks" table extracted from a PDF) — we look for that
-// pattern directly rather than trying to summarize free text.
 function extractRubricFromDocument(prompt) {
   const docMatch = prompt.match(/DOCUMENT:\n([\s\S]*)$/);
   const doc = docMatch ? docMatch[1] : "";
 
   const points = [];
-  let buffer = []; // accumulates a criterion's wrapped description text
-  let pendingMarks = null; // a mark value seen on its own line, awaiting a
-  // possible continuation fragment after it (some
-  // PDF table extractions place the "Marks" column
-  // value BETWEEN the two halves of a wrapped
-  // criterion, e.g. "...the relevant principle/Ohm's" / "1" / "law")
+  let buffer = [];
+  let pendingMarks = null;
 
   function flushAsPoint(description, maxMarks) {
-    if (maxMarks >= 1 && maxMarks <= 20 && description.length >= 15) {
-      points.push({ pointId: `p${points.length + 1}`, description, maxMarks });
+    if (
+      maxMarks >= 1 &&
+      maxMarks <= 20 &&
+      description.length >= 15
+    ) {
+      points.push({
+        pointId: `p${points.length + 1}`,
+        description,
+        maxMarks,
+      });
     }
   }
 
@@ -95,88 +74,84 @@ function extractRubricFromDocument(prompt) {
     if (pendingMarks !== null && buffer.length > 0) {
       flushAsPoint(buffer.join(" ").trim(), pendingMarks);
     }
+
     buffer = [];
     pendingMarks = null;
   }
 
   for (const rawLine of doc.split("\n")) {
     const line = rawLine.trim();
+
     if (!line) continue;
 
     if (/^total\b/i.test(line) || /^criterion\b/i.test(line)) {
       flushPending();
-      buffer = [];
       continue;
     }
 
     const bareNumber = line.match(/^(\d{1,2})$/);
+
     if (bareNumber) {
-      // Only flush-and-reset if a mark value was ALREADY pending (i.e. two
-      // bare-number lines with no continuation text between them) — that
-      // means the previous one never got its continuation fragment.
-      // Otherwise keep the buffer intact: it holds the description text
-      // this number belongs to, and still needs a continuation fragment
-      // (or none at all) after it.
-      if (pendingMarks !== null) flushPending();
+      if (pendingMarks !== null) {
+        flushPending();
+      }
+
       pendingMarks = Number(bareNumber[1]);
       continue;
     }
 
-    // Note: the text-before-the-number on THIS line can be very short
-    // (e.g. "law 1", the tail end of a wrapped criterion) — the minimum
-    // length check that filters out noise happens in flushAsPoint, on the
-    // full combined description (buffer + this line), not on this line
-    // alone.
     const inline = line.match(/^(.*\S)\s+(\d{1,2})$/);
+
     if (inline) {
       if (pendingMarks !== null) {
-        // A dangling pending number (from an earlier bare-number line)
-        // never got its continuation before a whole new criterion line
-        // showed up — flush it as a best-effort partial point, and treat
-        // this line as an unrelated fresh criterion (don't merge buffers).
         flushPending();
-        flushAsPoint(inline[1].trim(), Number(inline[2]));
-      } else {
-        // Normal case: buffer may hold earlier wrapped lines of THIS same
-        // criterion, ending here with its mark value.
-        flushAsPoint(
-          [...buffer, inline[1].trim()].join(" ").trim(),
-          Number(inline[2]),
-        );
       }
+
+      flushAsPoint(
+        [...buffer, inline[1].trim()].join(" ").trim(),
+        Number(inline[2])
+      );
+
       buffer = [];
       pendingMarks = null;
       continue;
     }
 
-    // Plain text line: either a wrapped description fragment (before a
-    // marks value has appeared) or the trailing continuation fragment
-    // that follows a bare-number line (e.g. "law").
     buffer.push(line);
+
     if (pendingMarks !== null) {
-      flushAsPoint(buffer.join(" ").trim(), pendingMarks);
+      flushAsPoint(
+        buffer.join(" ").trim(),
+        pendingMarks
+      );
+
       buffer = [];
       pendingMarks = null;
     } else if (buffer.length > 4) {
-      buffer.shift(); // cap runaway buffering on unrelated prose
+      buffer.shift();
     }
   }
+
   flushPending();
 
-  if (points.length > 0) return points;
+  if (points.length > 0) {
+    return points;
+  }
 
-  // Fallback for documents that don't have a parseable "text + number"
-  // rubric layout (e.g. short synthetic strings used in unit tests).
   return [
     {
       pointId: "p1",
       description: "Defines the core concept correctly",
       maxMarks: 3,
     },
-    { pointId: "p2", description: "Explains how/why it works", maxMarks: 3 },
+    {
+      pointId: "p2",
+      description: "Explains how or why it works",
+      maxMarks: 3,
+    },
     {
       pointId: "p3",
-      description: "Gives a correct, relevant example",
+      description: "Gives a correct relevant example",
       maxMarks: 2,
     },
     {
@@ -187,11 +162,6 @@ function extractRubricFromDocument(prompt) {
   ];
 }
 
-// --- Grade-mode heuristic ---
-// The app only ever calls gradeWithLLM(prompt) — the mock has no separate
-// entry point for rubric/student data, so we pull both back out of the
-// prompt string via regex. This mirrors gradingService.buildPrompt's fixed
-// format exactly; if that format changes, update these regexes too.
 const STOPWORDS = new Set([
   "the",
   "and",
@@ -243,113 +213,110 @@ const STOPWORDS = new Set([
 
 function significantWords(text) {
   return (text.toLowerCase().match(/[a-z]+/g) || []).filter(
-    (w) => w.length > 3 && !STOPWORDS.has(w),
+    (w) => w.length > 3 && !STOPWORDS.has(w)
   );
 }
 
-// Splits a document into per-question sections when it's laid out with
-// "Q1 ...", "Q2 ..." style headers (as GradeSense's question paper, model
-// answer, and multi-question student answers all are). Returns null when
-// fewer than 2 such headers are found, so callers can fall back to
-// treating the whole document as one section.
 function splitIntoSections(text) {
   const headerRe = /^Q\d+\b.*$/gim;
   const matches = [...text.matchAll(headerRe)];
-  if (matches.length < 2) return null;
+
+  if (matches.length < 2) {
+    return null;
+  }
 
   const sections = [];
+
   for (let i = 0; i < matches.length; i++) {
     const start = matches[i].index;
-    const end = i + 1 < matches.length ? matches[i + 1].index : text.length;
+    const end =
+      i + 1 < matches.length
+        ? matches[i + 1].index
+        : text.length;
+
     sections.push(text.slice(start, end));
   }
+
   return sections;
 }
 
 function heuristicGrade(prompt) {
-  const modelMatch = prompt.match(/MODEL ANSWER:\n([\s\S]*?)\n\nRUBRIC POINTS/);
-  const rubricMatch = prompt.match(
-    /RUBRIC POINTS \(award marks only up to maxMarks for each\):\n([\s\S]*?)\n\nSTUDENT ANSWER:/,
+  const modelMatch = prompt.match(
+    /MODEL ANSWER:\n([\s\S]*?)\n\nRUBRIC POINTS/
   );
+
+  const rubricMatch = prompt.match(
+    /RUBRIC POINTS \(award marks only up to maxMarks for each\):\n([\s\S]*?)\n\nSTUDENT ANSWER:/
+  );
+
   const studentMatch = prompt.match(
-    /STUDENT ANSWER:\n([\s\S]*?)\n\nFor each rubric point/,
+    /STUDENT ANSWER:\n([\s\S]*?)\n\nFor each rubric point/
   );
 
   let rubricDefinition = [];
+
   try {
-    rubricDefinition = rubricMatch ? JSON.parse(rubricMatch[1]) : [];
+    rubricDefinition = rubricMatch
+      ? JSON.parse(rubricMatch[1])
+      : [];
   } catch {
     rubricDefinition = [];
   }
-  const modelAnswerText = modelMatch ? modelMatch[1] : "";
-  const studentAnswerText = studentMatch ? studentMatch[1] : "";
 
-  // Guard against cross-question false positives: on a multi-question
-  // answer (e.g. a Science + English + Economics paper in one submission),
-  // matching a rubric point's keywords against the ENTIRE student answer
-  // means a Q1 rubric point can pick up "evidence" from the student's Q3
-  // answer just because they share generic vocabulary. When both the
-  // model answer and the student answer have parseable "Q1/Q2/Q3" section
-  // headers (in the same count/order), scope each rubric point's matching
-  // to only the student's answer for the same question its description
-  // came from. Falls back to whole-text matching otherwise (e.g. the
-  // single-question synthetic prompts used in unit tests).
+  const modelAnswerText = modelMatch
+    ? modelMatch[1]
+    : "";
+
+  const studentAnswerText = studentMatch
+    ? studentMatch[1]
+    : "";
+
   const modelSections = splitIntoSections(modelAnswerText);
   const studentSections = splitIntoSections(studentAnswerText);
-  const sectionsUsable =
-    modelSections &&
-    studentSections &&
-    modelSections.length === studentSections.length;
-
-  // Split into sentences once so we can quote a real one back as evidence
-  // (annotationGenerator anchors annotations by locating evidence as a
-  // literal substring in the student's answer, so evidence must never be
-  // invented text).
-  const allSentences = studentAnswerText
-    .split(/(?<=[.?!])\s+/)
-    .map((s) => s.trim())
-    .filter(Boolean);
 
   return rubricDefinition.map((point) => {
-    const keywords = significantWords(point.description || "");
+    const keywords = significantWords(point.description);
 
-    let scopedStudentText = studentAnswerText;
-    let scopedSentences = allSentences;
-    if (sectionsUsable) {
-      const sectionIndex = modelSections.findIndex((sec) =>
-        sec.includes(point.description),
-      );
-      if (sectionIndex !== -1) {
-        scopedStudentText = studentSections[sectionIndex];
-        scopedSentences = scopedStudentText
-          .split(/(?<=[.?!])\s+/)
-          .map((s) => s.trim())
-          .filter(Boolean);
+    let scopedStudent = studentAnswerText;
+
+    if (
+      modelSections &&
+      studentSections &&
+      modelSections.length === studentSections.length
+    ) {
+      const index = rubricDefinition.indexOf(point);
+
+      if (index < studentSections.length) {
+        scopedStudent = studentSections[index];
       }
     }
 
-    const lowerStudent = scopedStudentText.toLowerCase();
-    const matchedKeywords = keywords.filter((k) => lowerStudent.includes(k));
-    const overlap =
-      keywords.length > 0 ? matchedKeywords.length / keywords.length : 0;
+    const lowerStudent = scopedStudent.toLowerCase();
 
-    let status, awardedMarks;
-    if (overlap >= 0.6) {
+    const matchedKeywords = keywords.filter((keyword) =>
+      lowerStudent.includes(keyword)
+    );
+
+    const ratio = keywords.length
+      ? matchedKeywords.length / keywords.length
+      : 0;
+
+    let status;
+    let awardedMarks;
+
+    if (ratio >= 0.6) {
       status = "correct";
       awardedMarks = point.maxMarks;
-    } else if (overlap >= 0.25) {
+    } else if (ratio >= 0.25) {
       status = "partial";
-      awardedMarks = Math.round(point.maxMarks / 2);
-    } else if (scopedStudentText.trim().length > 0) {
-      // The student wrote something for this question, but none of the
-      // rubric point's keywords show up in it — that's a wrong-reasoning
-      // ("incorrect") answer, not an absent ("missing") one. The
-      // rubric-point status enum and annotationGenerator (which maps
-      // "incorrect" -> a strikethrough annotation, vs. "missing" -> an
-      // unanchored comment) were already built to distinguish these two
-      // cases; this heuristic previously collapsed them both into
-      // "missing", which meant the assignment's "incorrect answer" test
-      // case couldn't actually be exercised through the mock.
+      awardedMarks = Math.max(
+        1,
+        Math.floor(point.maxMarks / 2)
+      );
+    } else if (
+      matchedKeywords.length > 0 &&
+      lowerStudent.length > 20
+    ) {
       status = "incorrect";
       awardedMarks = 0;
     } else {
@@ -357,24 +324,33 @@ function heuristicGrade(prompt) {
       awardedMarks = 0;
     }
 
-    // Evidence must be a real substring of the student's answer — pick the
-    // first sentence containing a matched keyword, if any.
-    // Pick the sentence containing the MOST matched keywords (not just the
-    // first one that contains any) so distinct rubric points on the same
-    // question tend to cite different, more specific sentences instead of
-    // all pointing at the same generic opening line.
     let evidence = "";
-    if (status !== "missing" && matchedKeywords.length > 0) {
+
+    if (
+      status !== "missing" &&
+      matchedKeywords.length > 0
+    ) {
+      const sentences = scopedStudent
+        .split(/(?<=[.!?])\s+|\n+/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+
       let bestSentence = "";
       let bestCount = 0;
-      for (const s of scopedSentences) {
-        const lowerS = s.toLowerCase();
-        const count = matchedKeywords.filter((k) => lowerS.includes(k)).length;
+
+      for (const sentence of sentences) {
+        const lower = sentence.toLowerCase();
+
+        const count = matchedKeywords.filter((k) =>
+          lower.includes(k)
+        ).length;
+
         if (count > bestCount) {
           bestCount = count;
-          bestSentence = s;
+          bestSentence = sentence;
         }
       }
+
       evidence = bestSentence;
     }
 
@@ -382,10 +358,10 @@ function heuristicGrade(prompt) {
       status === "correct"
         ? "Covers this point adequately."
         : status === "partial"
-          ? `Partially addresses "${point.description}" — expand with more detail.`
-          : status === "incorrect"
-            ? `The answer doesn't correctly address "${point.description}" — review and correct this point.`
-            : `No clear evidence of "${point.description}" in the answer.`;
+        ? `Partially addresses "${point.description}" — expand with more detail.`
+        : status === "incorrect"
+        ? `The answer doesn't correctly address "${point.description}" — review and correct this point.`
+        : `No clear evidence of "${point.description}" in the answer.`;
 
     return {
       pointId: point.pointId,
@@ -397,148 +373,430 @@ function heuristicGrade(prompt) {
   });
 }
 
-// --- Real provider (Groq) ---
-async function callGroq(prompt) {
-  const apiKey = process.env.GROQ_API_KEY;
-  if (!apiKey) {
-    throw new AppError("GROQ_API_KEY not set", 500, "BAD_CONFIG");
-  }
+/*
+ * Handwritten/scanned PDF OCR
+ *
+ * OCR_PROVIDER is separate from LLM_PROVIDER so that:
+ *
+ * OCR_PROVIDER=groq
+ * LLM_PROVIDER=mock
+ *
+ * can be used while debugging OCR independently.
+ */
+async function transcribeHandwrittenImages(
+  imageBuffers,
+  { forceScenario, withLayout = false } = {}
+) {
+  const provider =
+    process.env.OCR_PROVIDER ||
+    process.env.LLM_PROVIDER ||
+    "mock";
 
-  let response;
-  try {
-    response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model: "llama-3.3-70b-versatile",
-        messages: [{ role: "user", content: prompt }],
-        temperature: 0.2,
-      }),
-    });
-  } catch (networkErr) {
-    // Network-level failure (DNS, timeout, connection refused)
-    throw new AppError("LLM API unreachable", 502, "LLM_UNAVAILABLE");
-  }
+  console.log("OCR provider:", provider);
 
-  if (!response.ok) {
+  const pages = [];
+
+  for (const buffer of imageBuffers) {
+    if (provider === "mock") {
+      const text = mockTranscribeImage(
+        buffer,
+        forceScenario
+      );
+
+      if (withLayout) {
+        pages.push({
+          pageNumber: pages.length + 1,
+          text,
+          blocks: [],
+        });
+      } else {
+        pages.push(text);
+      }
+
+      continue;
+    }
+
+    if (provider === "groq") {
+      const result = await callGroqVision(
+        buffer,
+        { withLayout }
+      );
+
+      if (withLayout) {
+        pages.push({
+          pageNumber: pages.length + 1,
+          text: result.text,
+          blocks: result.blocks || [],
+        });
+      } else {
+        pages.push(result.text);
+      }
+
+      continue;
+    }
+
     throw new AppError(
-      `LLM API returned ${response.status}`,
-      502,
-      "LLM_UNAVAILABLE",
+      `Unknown OCR_PROVIDER: ${provider}`,
+      500,
+      "BAD_CONFIG"
     );
   }
 
-  const data = await response.json();
-  return data.choices?.[0]?.message?.content ?? "";
-}
-
-// --- Handwritten / scanned answer OCR ---
-// Called by pdfExtractor as a fallback when pdf-parse finds no usable
-// text layer (i.e. the PDF is really just a picture of a handwritten
-// or scanned page). One vision call per page, joined into one string —
-// simpler to reason about than a single multi-image call, and a bad
-// page doesn't necessarily sink the whole submission.
-async function transcribeHandwrittenImages(
-  imageBuffers,
-  { forceScenario } = {},
-) {
-  const provider =
-    process.env.OCR_PROVIDER || process.env.LLM_PROVIDER || "mock";
-  const pageTexts = [];
-  for (const buffer of imageBuffers) {
-    if (provider === "mock") {
-      pageTexts.push(mockTranscribeImage(buffer, forceScenario));
-    } else if (provider === "groq") {
-      pageTexts.push(await callGroqVision(buffer));
-    } else {
-      throw new AppError(
-        `Unknown LLM_PROVIDER: ${provider}`,
-        500,
-        "BAD_CONFIG",
-      );
-    }
+  if (withLayout) {
+    return pages;
   }
 
-  return pageTexts.join("\n\n");
+  return pages.join("\n\n").trim();
 }
 
 function mockTranscribeImage(buffer, forceScenario) {
   if (forceScenario === "vision_failure") {
-    throw new AppError("Simulated vision API failure", 502, "LLM_UNAVAILABLE");
-  }
-  // Deterministic stand-in so tests never depend on a real OCR call or
-  // on what the fixture image actually contains.
-  return `[MOCK OCR TRANSCRIPTION of a ${buffer.length}-byte page image]`;
-}
-
-async function callGroqVision(imageBuffer) {
-  const apiKey = process.env.GROQ_API_KEY;
-  if (!apiKey) {
-    throw new AppError("GROQ_API_KEY not set", 500, "BAD_CONFIG");
-  }
-
-  let response;
-  try {
-    response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        // Vision-capable Groq model. Groq's lineup changes often —
-        // if this id has been retired, check console.groq.com/docs/vision
-        // for the current one and swap it in here.
-        model: "qwen/qwen3.6-27b",
-        temperature: 0,
-        max_completion_tokens: 4096,
-        messages: [
-          {
-            role: "user",
-            content: [
-              {
-                type: "text",
-                text: `
-Transcribe all readable handwritten text in this image.
-
-Important:
-- Preserve the student's original spelling, grammar mistakes, and wording.
-- Do NOT correct the student's answers.
-- Do NOT solve the questions.
-- Preserve question numbers such as Q1, Q2, Q3.
-- Include labels and text inside diagrams when readable.
-- If something cannot be read, write [unclear].
-- Return only the transcription.
-`,
-              },
-              {
-                type: "image_url",
-                image_url: {
-                  url: `data:image/png;base64,${imageBuffer.toString("base64")}`,
-                },
-              },
-            ],
-          },
-        ],
-      }),
-    });
-  } catch (networkErr) {
-    throw new AppError("Vision API unreachable", 502, "LLM_UNAVAILABLE");
-  }
-
-  if (!response.ok) {
     throw new AppError(
-      `Vision API returned ${response.status}`,
+      "Simulated vision API failure",
       502,
-      "LLM_UNAVAILABLE",
+      "LLM_UNAVAILABLE"
     );
   }
 
-  const data = await response.json();
-  return data.choices?.[0]?.message?.content ?? "";
+  return `[MOCK OCR TRANSCRIPTION of a ${buffer.length}-byte page image]`;
 }
 
-module.exports = { gradeWithLLM, transcribeHandwrittenImages };
+async function callGroqVision(
+  imageBuffer,
+  { withLayout = false } = {}
+) {
+  const apiKey = process.env.GROQ_API_KEY;
+
+  if (!apiKey) {
+    throw new AppError(
+      "GROQ_API_KEY not set",
+      500,
+      "BAD_CONFIG"
+    );
+  }
+
+  const prompt = withLayout
+    ? `
+You are doing OCR on a handwritten student answer.
+
+Return ONLY valid JSON.
+
+Required format:
+
+{
+  "text": "complete transcription",
+  "blocks": [
+    {
+      "text": "exact text from this region",
+      "bbox": [x1, y1, x2, y2]
+    }
+  ]
+}
+
+VERY IMPORTANT:
+
+1. Preserve the student's spelling exactly.
+2. Preserve grammar mistakes.
+3. Do not correct spelling.
+4. Do not solve the question.
+5. Do not paraphrase.
+6. Include question numbers.
+7. Include readable text inside diagrams.
+8. Create one block per PHYSICAL LINE of handwriting — one row on the page, top to bottom. NEVER combine two or more lines into a single block, even if they are the same sentence. If a sentence wraps across 3 lines, that is 3 separate blocks.
+9. Bounding boxes MUST tightly surround just that one line's handwriting — top of the box at the top of that line's letters, bottom of the box at the bottom of that line's letters. Do not let the box extend down into the next line or up into the previous line.
+10. Coordinates must be normalized from 0 to 1000.
+11. (0,0) is the TOP LEFT corner.
+12. x1,y1 = top-left.
+13. x2,y2 = bottom-right.
+14. Do not put commentary outside JSON.
+15. If handwriting is difficult to read, make your best OCR attempt rather than omitting the block.
+16. Sanity check before answering: if a page has about N visible lines of handwriting, you should return roughly N blocks (plus a few more if some lines contain two distinct sentences). A block whose bbox height is much taller than the others is almost always wrong — it means you merged lines. Split it.
+
+Example of WRONG output (do not do this):
+{ "text": "The switch is used to open and close the circuit. When the switch is closed current flows...", "bbox": [30, 200, 780, 280] }
+This is wrong because it spans multiple lines in one box.
+
+Example of RIGHT output:
+{ "text": "The switch is used to open and close the circuit.", "bbox": [30, 200, 780, 235] }
+{ "text": "When the switch is closed current flows from the positive terminal", "bbox": [30, 236, 780, 270] }
+
+The blocks are REQUIRED because another program will draw correction marks directly over the original handwritten page. A box that covers the wrong line, or several lines at once, makes the correction marks land on the wrong part of the student's work.
+`
+    : `
+Transcribe the handwritten answer.
+
+Preserve:
+- spelling mistakes
+- grammar mistakes
+- wording
+- question numbers
+- diagram labels
+
+Do not correct the student.
+Do not solve the question.
+
+Return only the transcription.
+`;
+
+  let response;
+
+  try {
+    response = await fetch(
+      "https://api.groq.com/openai/v1/chat/completions",
+      {
+        method: "POST",
+
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+        },
+
+        body: JSON.stringify({
+          model: "qwen/qwen3.6-27b",
+
+          temperature: 0,
+
+          max_completion_tokens: withLayout ? 8000 : 4096,
+
+          ...(withLayout
+            ? { response_format: { type: "json_object" } }
+            : {}),
+
+          reasoning_effort: "none",
+
+          messages: [
+            {
+              role: "user",
+
+              content: [
+                {
+                  type: "text",
+                  text: prompt,
+                },
+
+                {
+                  type: "image_url",
+
+                  image_url: {
+                    url:
+                      `data:image/png;base64,` +
+                      imageBuffer.toString(
+                        "base64"
+                      ),
+                  },
+                },
+              ],
+            },
+          ],
+        }),
+      }
+    );
+  } catch (err) {
+    throw new AppError(
+      "Vision API unreachable",
+      502,
+      "LLM_UNAVAILABLE"
+    );
+  }
+
+  if (!response.ok) {
+    const detail =
+      await response.text().catch(() => "");
+
+    console.error(
+      "Groq vision error:",
+      response.status,
+      detail
+    );
+
+    throw new AppError(
+      `Vision API returned ${response.status}`,
+      502,
+      "LLM_UNAVAILABLE"
+    );
+  }
+
+  const data =
+    await response.json();
+
+  let content =
+    data.choices?.[0]?.message?.content?.trim();
+
+  if (!content) {
+    throw new AppError(
+      "Vision API returned empty transcription",
+      502,
+      "LLM_UNAVAILABLE"
+    );
+  }
+
+  content = content
+    .replace(/<think>[\s\S]*?<\/think>/gi, "")
+    .trim();
+
+  if (!content) {
+    throw new AppError(
+      "Vision API returned empty transcription",
+      502,
+      "LLM_UNAVAILABLE"
+    );
+  }
+
+  if (!withLayout) {
+    return {
+      text: content,
+      blocks: [],
+    };
+  }
+
+  let jsonText = content
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+
+  let parsed;
+  try {
+    parsed = JSON.parse(jsonText);
+  } catch (err) {
+    const match = jsonText.match(/\{[\s\S]*\}/);
+    if (match) {
+      try {
+        parsed = JSON.parse(match[0]);
+      } catch (err2) {
+        parsed = null;
+      }
+    }
+  }
+
+  if (!parsed) {
+    console.error(
+      "[OCR LAYOUT] Invalid JSON from vision model:",
+      content
+    );
+
+    return {
+      text: content,
+      blocks: [],
+    };
+  }
+
+  try {
+    const text =
+      typeof parsed.text === "string"
+        ? parsed.text.trim()
+        : "";
+
+    const rawBlocks =
+      Array.isArray(parsed.blocks)
+        ? parsed.blocks
+            .filter((block) => {
+              if (
+                typeof block?.text !==
+                "string"
+              ) {
+                return false;
+              }
+
+              if (
+                !Array.isArray(
+                  block.bbox
+                )
+              ) {
+                return false;
+              }
+
+              if (
+                block.bbox.length !== 4
+              ) {
+                return false;
+              }
+
+              return block.bbox.every(
+                (n) =>
+                  Number.isFinite(
+                    Number(n)
+                  )
+              );
+            })
+            .map((block) => ({
+              text: block.text,
+              bbox: block.bbox.map(
+                Number
+              ),
+            }))
+        : [];
+
+    const heights = rawBlocks
+      .map(
+        (block) =>
+          Number(block.bbox[3]) -
+          Number(block.bbox[1])
+      )
+      .filter(
+        (h) => Number.isFinite(h) && h > 0
+      )
+      .sort((a, b) => a - b);
+
+    const medianHeight = heights.length
+      ? heights[
+          Math.floor(heights.length / 2)
+        ]
+      : 0;
+
+    const MAX_HEIGHT_MULTIPLIER = 1.6;
+
+    const blocks = rawBlocks.map((block) => {
+      const [x1, y1, x2, y2] = block.bbox;
+      const height = y2 - y1;
+
+      if (
+        medianHeight > 0 &&
+        height >
+          medianHeight *
+            MAX_HEIGHT_MULTIPLIER
+      ) {
+        return {
+          ...block,
+          bbox: [
+            x1,
+            y1,
+            x2,
+            y1 + medianHeight,
+          ],
+        };
+      }
+
+      return block;
+    });
+
+    console.log(
+      `[OCR LAYOUT] ${blocks.length} blocks detected` +
+        (medianHeight
+          ? ` (median line height ${medianHeight.toFixed(
+              1
+            )}/1000)`
+          : "")
+    );
+
+    return {
+      text,
+      blocks,
+    };
+  } catch (err) {
+    console.error(
+      "[OCR LAYOUT] Invalid JSON from vision model:",
+      content
+    );
+
+    return {
+      text: content,
+      blocks: [],
+    };
+  }
+}
+
+module.exports = {
+  gradeWithLLM,
+  transcribeHandwrittenImages,
+};

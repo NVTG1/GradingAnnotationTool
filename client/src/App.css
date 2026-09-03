@@ -508,6 +508,12 @@ mark {
   padding: 0 1px;
 }
 
+.ann-highlight {
+  background: rgba(230, 57, 70, 0.25);
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
 .ann-underline {
   border-bottom: 2px solid var(--red-pen);
 }
@@ -620,4 +626,475 @@ mark {
   display: flex;
   gap: 0.4rem;
   flex-shrink: 0;
+}
+
+/* =========================================================
+   Improved annotation editor
+   ========================================================= */
+
+.annotation-editor-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+}
+
+.btn-small {
+  padding: 0.45rem 0.75rem;
+  font-size: 0.8rem;
+}
+
+.annotation-answer-preview {
+  margin-top: 1.2rem;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  background: var(--paper);
+}
+
+.annotation-answer-preview-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.8rem 1rem;
+  border-bottom: 1px solid var(--rule);
+  font-size: 0.82rem;
+  color: var(--ink-soft);
+}
+
+.annotation-answer-text {
+  padding: 1.2rem;
+  white-space: pre-wrap;
+  line-height: 1.8;
+  font-family: var(--font-display);
+  font-size: 1rem;
+  max-height: 360px;
+  overflow-y: auto;
+}
+
+.annotation-list-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.annotation-list-head h3 {
+  margin: 0;
+}
+
+.annotation-empty {
+  border: 1px dashed var(--rule);
+  padding: 1.4rem;
+  margin-top: 0.8rem;
+  text-align: center;
+  color: var(--ink-soft);
+}
+
+.annotation-empty p {
+  margin: 0.4rem 0 0;
+}
+
+.annotation-row-top {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.annotation-source {
+  font-size: 0.7rem;
+  color: var(--gray-pen);
+  border: 1px solid var(--rule);
+  padding: 0.15rem 0.4rem;
+  border-radius: 10px;
+}
+
+.annotation-row-number {
+  font-family: var(--font-display);
+  font-size: 0.75rem;
+  color: var(--gray-pen);
+  min-width: 28px;
+}
+
+.annotation-row-coordinates {
+  margin-top: 0.4rem;
+  font-size: 0.7rem;
+  color: var(--gray-pen);
+}
+
+.annotation-editor-head-actions .btn-primary,
+.annotation-editor-head-actions .btn-secondary {
+  white-space: nowrap;
+}
+
+/* =========================================================
+   Annotation modal
+   ========================================================= */
+
+.annotation-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(0, 0, 0, 0.42);
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  padding: 1rem;
+}
+
+.annotation-modal {
+  width: min(680px, 100%);
+  max-height: 90vh;
+  overflow-y: auto;
+
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.22);
+}
+
+.annotation-modal-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+
+  padding: 1.2rem 1.3rem;
+  border-bottom: 1px solid var(--rule);
+}
+
+.annotation-modal-head h2 {
+  margin: 0;
+}
+
+.annotation-modal-head p {
+  margin: 0.25rem 0 0;
+  color: var(--ink-soft);
+  font-size: 0.82rem;
+}
+
+.modal-close {
+  border: none;
+  background: transparent;
+  font-size: 1.7rem;
+  line-height: 1;
+  cursor: pointer;
+  color: var(--ink-soft);
+}
+
+.annotation-modal-body {
+  padding: 1.3rem;
+
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.annotation-modal-body label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+
+  color: var(--ink-soft);
+  font-size: 0.8rem;
+}
+
+.annotation-modal-body input,
+.annotation-modal-body select,
+.annotation-modal-body textarea {
+  width: 100%;
+  box-sizing: border-box;
+
+  padding: 0.65rem 0.7rem;
+
+  font-family: var(--font-body);
+  font-size: 0.9rem;
+
+  color: var(--ink);
+  background: white;
+
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+}
+
+.annotation-modal-body textarea {
+  resize: vertical;
+}
+
+.coordinate-section {
+  border-top: 1px solid var(--rule);
+  padding-top: 1rem;
+}
+
+.coordinate-section-title {
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+
+.coordinate-help {
+  margin: 0.3rem 0 0.8rem;
+  color: var(--gray-pen);
+  font-size: 0.72rem;
+}
+
+.coordinate-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 0.6rem;
+}
+
+.coordinate-grid label {
+  min-width: 0;
+}
+
+.annotation-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.6rem;
+
+  padding: 1rem 1.3rem;
+
+  border-top: 1px solid var(--rule);
+}
+
+/* =========================================================
+   Rubric result improvements
+   ========================================================= */
+
+.rubric-summary {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+
+  margin: 1.2rem 0 0.7rem;
+
+  color: var(--ink-soft);
+  font-size: 0.8rem;
+}
+
+.rubric-summary strong {
+  color: var(--ink);
+}
+
+.rubric-table-wrapper {
+  overflow-x: auto;
+}
+
+/* =========================================================
+   Responsive annotation controls
+   ========================================================= */
+
+@media (max-width: 700px) {
+  .annotation-editor-head {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 1rem;
+  }
+
+  .annotation-editor-head-actions {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .coordinate-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .annotation-row {
+    flex-wrap: wrap;
+  }
+
+  .annotation-row-actions {
+    width: 100%;
+    margin-left: 48px;
+  }
+}
+
+.annotation-answer-text-toggle {
+  border-top: 1px solid var(--rule);
+}
+
+.annotation-answer-text-toggle summary {
+  cursor: pointer;
+  padding: 0.6rem 1rem;
+  font-size: 0.8rem;
+  color: var(--ink-soft);
+}
+
+.annotation-answer-text-toggle .annotation-answer-text {
+  border-top: 1px solid var(--rule);
+}
+
+/* =========================================================
+   Handwritten answer viewer — page image + highlight overlays
+   ========================================================= */
+
+.answer-viewer {
+  max-height: 640px;
+  overflow-y: auto;
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.answer-viewer-status {
+  padding: 2rem 1rem;
+  text-align: center;
+  color: var(--ink-soft);
+  font-size: 0.9rem;
+}
+
+.answer-viewer-page {
+  position: relative;
+  line-height: 0;
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  background: var(--paper-white);
+}
+
+.answer-viewer-image {
+  display: block;
+  width: 100%;
+  height: auto;
+  user-select: none;
+}
+
+.answer-viewer-box {
+  position: absolute;
+  border: 2px solid;
+  border-radius: 2px;
+  opacity: 0.28;
+  cursor: pointer;
+  transition: opacity 0.12s ease, box-shadow 0.12s ease,
+    border-width 0.12s ease;
+}
+
+.answer-viewer-box:hover,
+.answer-viewer-box-active {
+  opacity: 0.55;
+  border-width: 3px;
+  box-shadow: 0 0 0 3px rgba(30, 42, 58, 0.3);
+}
+
+@keyframes answer-viewer-tooltip-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.answer-viewer-tooltip {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 10px);
+  z-index: 30;
+  min-width: 220px;
+  max-width: 380px;
+  width: max-content;
+  padding: 0.65rem 0.8rem;
+  background: #17212f;
+  color: #fdfdfb;
+  font-size: 0.9rem;
+  line-height: 1.45;
+  border-radius: 6px;
+  border-left: 4px solid #5a6a7d;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+  animation: answer-viewer-tooltip-in 0.1s ease-out;
+  white-space: normal;
+  word-break: break-word;
+}
+
+.answer-viewer-tooltip.status-correct {
+  border-left-color: #4a8a5c;
+}
+
+.answer-viewer-tooltip.status-partial {
+  border-left-color: #c9922e;
+}
+
+.answer-viewer-tooltip.status-incorrect {
+  border-left-color: #c94436;
+}
+
+.answer-viewer-tooltip::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  left: 14px;
+  border: 7px solid transparent;
+  border-top-color: #17212f;
+}
+
+.answer-viewer-tooltip-below {
+  bottom: auto;
+  top: calc(100% + 10px);
+}
+
+.answer-viewer-tooltip-below::after {
+  top: auto;
+  bottom: 100%;
+  border-top-color: transparent;
+  border-bottom-color: #17212f;
+}
+
+.answer-viewer-tooltip-right {
+  left: auto;
+  right: 0;
+}
+
+.answer-viewer-tooltip-right::after {
+  left: auto;
+  right: 14px;
+}
+
+.answer-viewer-tooltip-head {
+  margin-bottom: 0.35rem;
+}
+
+.answer-viewer-tooltip-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.answer-viewer-tooltip-icon {
+  font-size: 0.8rem;
+  line-height: 1;
+}
+
+.answer-viewer-tooltip-status.status-correct {
+  background: #244d31;
+  color: #8fe0a6;
+}
+
+.answer-viewer-tooltip-status.status-partial {
+  background: #4d3c14;
+  color: #f0c065;
+}
+
+.answer-viewer-tooltip-status.status-incorrect {
+  background: #4d1f19;
+  color: #f2958a;
+}
+
+.answer-viewer-tooltip-status.status-note {
+  background: #33404f;
+  color: #cbd5e0;
+}
+
+.answer-viewer-tooltip-text {
+  display: block;
+  font-weight: 500;
 }

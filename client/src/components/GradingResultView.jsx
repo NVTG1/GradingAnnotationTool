@@ -1,64 +1,132 @@
 import StatusBadge from "./StatusBadge";
 
-export default function GradingResultView({ gradingResult }) {
-  const { totalMarks, maxMarks, rubricPoints, confidence, needsHumanReview, reviewReason, llmStatus } =
-    gradingResult;
+export default function GradingResultView({
+  gradingResult,
+}) {
+  const {
+    totalMarks,
+    maxMarks,
+    rubricPoints,
+    confidence,
+    needsHumanReview,
+    reviewReason,
+    llmStatus,
+  } = gradingResult;
+
+  const confidencePercent = Math.round(
+    Number(confidence || 0) * 100
+  );
 
   return (
     <div className="grading-result">
       <div className="score-row">
         <div className="score-stamp">
-          <span className="score-value">{totalMarks}</span>
-          <span className="score-max">/ {maxMarks}</span>
+          <span className="score-value">
+            {totalMarks}
+          </span>
+
+          <span className="score-max">
+            / {maxMarks}
+          </span>
         </div>
 
         <div className="score-meta">
           <div className="confidence-line">
             <span>Confidence</span>
+
             <div className="confidence-bar">
               <div
                 className="confidence-fill"
-                style={{ width: `${Math.round(confidence * 100)}%` }}
+                style={{
+                  width: `${confidencePercent}%`,
+                }}
               />
             </div>
-            <span>{Math.round(confidence * 100)}%</span>
+
+            <span>{confidencePercent}%</span>
           </div>
+
           <div className="meta-badges">
             <StatusBadge status={llmStatus} />
-            {needsHumanReview && <span className="badge badge-review">Needs human review</span>}
+
+            {needsHumanReview && (
+              <span className="badge badge-review">
+                Needs human review
+              </span>
+            )}
           </div>
+
           {needsHumanReview && reviewReason && (
-            <p className="review-reason">{reviewReason}</p>
+            <p className="review-reason">
+              {reviewReason}
+            </p>
           )}
         </div>
       </div>
 
-      <table className="rubric-table">
-        <thead>
-          <tr>
-            <th>Rubric point</th>
-            <th>Status</th>
-            <th>Marks</th>
-            <th>Evidence</th>
-            <th>Feedback</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rubricPoints.map((point) => (
-            <tr key={point.pointId}>
-              <td>{point.description}</td>
-              <td>
-                <StatusBadge status={point.status} />
-              </td>
-              <td className="marks-cell">
-                {point.awardedMarks} / {point.maxMarks}
-              </td>
-              <td className="evidence-cell">{point.evidence || <em>—</em>}</td>
-              <td>{point.feedback}</td>
+      <div className="rubric-summary">
+        <strong>
+          {rubricPoints.length} rubric points
+        </strong>
+
+        <span>
+          Review the evidence below and edit annotations
+          if required.
+        </span>
+      </div>
+
+      <div className="rubric-table-wrapper">
+        <table className="rubric-table">
+          <thead>
+            <tr>
+              <th>Rubric point</th>
+              <th>Status</th>
+              <th>Marks</th>
+              <th>Evidence</th>
+              <th>Feedback</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+
+          <tbody>
+            {rubricPoints.map((point) => (
+              <tr key={point.pointId}>
+                <td>
+                  <div className="rubric-description">
+                    {point.description}
+                  </div>
+                </td>
+
+                <td>
+                  <StatusBadge
+                    status={point.status}
+                  />
+                </td>
+
+                <td className="marks-cell">
+                  {point.awardedMarks} /{" "}
+                  {point.maxMarks}
+                </td>
+
+                <td className="evidence-cell">
+                  {point.evidence ? (
+                    `“${point.evidence}”`
+                  ) : (
+                    <em>—</em>
+                  )}
+                </td>
+
+                <td>
+                  {point.feedback || (
+                    <span className="muted">
+                      No feedback
+                    </span>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

@@ -1,11 +1,12 @@
 const { gradeWithLLM } = require("./llmClient");
 const { parseLLMOutput, validateAndClamp } = require("./gradingValidator");
 
-function buildPrompt({ questionText, modelAnswerText, rubricDefinition, studentAnswerText }) {
-  // We instruct the LLM to return ONLY JSON matching our schema, and
-  // we hand it the rubric point IDs explicitly so it can't invent
-  // its own point structure. Grounding in evidence is required in
-  // the prompt itself, not just hoped for.
+function buildPrompt({
+  questionText,
+  modelAnswerText,
+  rubricDefinition,
+  studentAnswerText,
+}) {
   return `You are grading a student's answer against a rubric. Respond with ONLY valid JSON, no other text.
 
 QUESTION:
@@ -20,17 +21,27 @@ ${JSON.stringify(rubricDefinition, null, 2)}
 STUDENT ANSWER:
 ${studentAnswerText}
 
-For each rubric point, return: pointId, awardedMarks, status (correct|partial|missing|incorrect), evidence (a short paraphrase of the relevant part of the student's answer, or empty string if none), feedback (specific, actionable correction).
+For each rubric point, return:
+pointId,
+awardedMarks,
+status (correct|partial|missing|incorrect),
+evidence (a verbatim excerpt of AT LEAST 6-8 words / a full clause or sentence copied exactly from the student answer — never a single word or short fragment like "circuit." — because a program will try to locate this exact text on the original page to draw a correction mark, and a one-word excerpt can match the wrong place or nowhere at all. Use an empty string if there is truly no such excerpt to quote.),
+feedback (specific, actionable correction).
 
-Respond with JSON of the shape: { "rubricPoints": [ { "pointId": "...", "awardedMarks": 0, "status": "...", "evidence": "...", "feedback": "..." } ] }`;
+Respond with JSON of the shape:
+{
+  "rubricPoints": [
+    {
+      "pointId": "...",
+      "awardedMarks": 0,
+      "status": "correct",
+      "evidence": "...",
+      "feedback": "..."
+    }
+  ]
+}`;
 }
 
-/**
- * Computes a confidence score and whether human review is needed.
- * This is deliberately simple and RULE-BASED (not another LLM call) —
- * confidence about the grading itself shouldn't depend on the same
- * unreliable process we're trying to sanity-check.
- */
 function computeConfidence({ wasClamped, llmStatus, rubricPoints }) {
   let confidence = 1.0;
   const reasons = [];
@@ -41,7 +52,7 @@ function computeConfidence({ wasClamped, llmStatus, rubricPoints }) {
   }
 
   const missingEvidence = rubricPoints.filter(
-    (p) => p.status !== "missing" && !p.evidence
+    (p) => p.status !== "missing" && !p.evidence,
   );
   if (missingEvidence.length > 0) {
     confidence -= 0.3;
@@ -63,10 +74,8 @@ async function gradeSubmission({
   modelAnswerText,
   rubricDefinition,
   studentAnswerText,
-  forceScenario, // test-only hook, passed through to the mock LLM
+  forceScenario,
 }) {
-  // --- Reliability rule: blank answers are graded deterministically,
-  // without even calling the LLM. Every rubric point is "missing".
   if (!studentAnswerText || !studentAnswerText.trim()) {
     const rubricPoints = rubricDefinition.map((rp) => ({
       pointId: rp.pointId,
@@ -89,15 +98,18 @@ async function gradeSubmission({
     };
   }
 
-  const prompt = buildPrompt({ questionText, modelAnswerText, rubricDefinition, studentAnswerText });
+  const prompt = buildPrompt({
+    questionText,
+    modelAnswerText,
+    rubricDefinition,
+    studentAnswerText,
+  });
 
   let llmStatus = "ok";
   let rawText;
   try {
     rawText = await gradeWithLLM(prompt, { forceScenario });
   } catch (err) {
-    // LLM API failure -> we don't crash the request. We return a
-    // result flagged for mandatory human review instead.
     return {
       rubricPoints: rubricDefinition.map((rp) => ({
         pointId: rp.pointId,
@@ -122,15 +134,16 @@ async function gradeSubmission({
     parsed = parseLLMOutput(rawText);
   } catch (err) {
     llmStatus = "repaired";
-    parsed = { rubricPoints: [] }; // triggers "missing" fallback for every point in validateAndClamp
+    parsed = { rubricPoints: [] };
   }
 
   const { rubricPoints, totalMarks, maxMarks, wasClamped } = validateAndClamp(
     parsed,
-    rubricDefinition
+    rubricDefinition,
   );
   if (wasClamped && llmStatus === "ok") llmStatus = "repaired";
-  if (process.env.LLM_PROVIDER === "mock") llmStatus = llmStatus === "ok" ? "mock" : llmStatus;
+  if (process.env.LLM_PROVIDER === "mock")
+    llmStatus = llmStatus === "ok" ? "mock" : llmStatus;
 
   const { confidence, needsHumanReview, reviewReason } = computeConfidence({
     wasClamped,
@@ -138,7 +151,15 @@ async function gradeSubmission({
     rubricPoints,
   });
 
-  return { rubricPoints, totalMarks, maxMarks, confidence, needsHumanReview, reviewReason, llmStatus };
+  return {
+    rubricPoints,
+    totalMarks,
+    maxMarks,
+    confidence,
+    needsHumanReview,
+    reviewReason,
+    llmStatus,
+  };
 }
 
 module.exports = { gradeSubmission, buildPrompt, computeConfidence };

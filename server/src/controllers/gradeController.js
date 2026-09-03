@@ -5,7 +5,9 @@ const GradingResult = require("../models/GradingResult");
 const Annotation = require("../models/Annotation");
 const { parseRubric } = require("../services/rubricParser");
 const { gradeSubmission } = require("../services/gradingService");
-const { generateAnnotationsFromGrading } = require("../services/annotationGenerator");
+const {
+  generateAnnotationsFromGrading,
+} = require("../services/annotationGenerator");
 
 // POST /api/grade/:submissionId
 const gradeBySubmissionId = asyncHandler(async (req, res) => {
@@ -20,7 +22,10 @@ const gradeBySubmissionId = asyncHandler(async (req, res) => {
   // Submission document — re-grading the same submission (e.g. after
   // an annotation edit) never re-parses the rubric or re-spends an
   // LLM call on something that hasn't changed.
-  if (!submission.rubricDefinition || submission.rubricDefinition.length === 0) {
+  if (
+    !submission.rubricDefinition ||
+    submission.rubricDefinition.length === 0
+  ) {
     const { rubricDefinition } = await parseRubric(submission.modelAnswerText);
     submission.rubricDefinition = rubricDefinition;
     await submission.save();
@@ -54,9 +59,10 @@ const gradeBySubmissionId = asyncHandler(async (req, res) => {
   await generateAnnotationsFromGrading(
     submission._id,
     submission.studentAnswerText,
-    gradingOutput.rubricPoints
+    gradingOutput.rubricPoints,
+    submission.studentAnswerLayout,
   );
-
+  
   res.status(201).json({ gradingResult });
 });
 

@@ -1,68 +1,138 @@
 const asyncHandler = require("../utils/asyncHandler");
 const AppError = require("../utils/AppError");
 const Submission = require("../models/Submission");
-const { extractTextFromPDF } = require("../utils/pdfExtractor");
+const {
+  extractTextFromPDF,
+} = require("../utils/pdfExtractor");
 
-// POST /api/upload
-const uploadSubmission = asyncHandler(async (req, res) => {
-  const files = req.files || {};
+const uploadSubmission =
+  asyncHandler(async (req, res) => {
+    const files = req.files || {};
 
-  // --- Validation: this is part of "Reliability" from the brief ---
-  // A missing required file is a CLIENT error (400), not a server
-  // crash. We check explicitly rather than letting a later step
-  // fail with a confusing "cannot read property of undefined".
-  const required = ["questionPaper", "studentAnswer", "modelAnswer"];
-  const missing = required.filter((key) => !files[key]);
+    const required = [
+      "questionPaper",
+      "studentAnswer",
+      "modelAnswer",
+    ];
 
-  if (missing.length > 0) {
-    throw new AppError(
-      `Missing required file(s): ${missing.join(", ")}`,
-      400,
-      "MISSING_FILES"
-    );
-  }
+    const missing =
+      required.filter(
+        (key) => !files[key]
+      );
 
-  const questionPaperPath = files.questionPaper[0].path;
-  const studentAnswerPath = files.studentAnswer[0].path;
-  const modelAnswerPath = files.modelAnswer[0].path;
+    if (missing.length > 0) {
+      throw new AppError(
+        `Missing required file(s): ${missing.join(", ")}`,
+        400,
+        "MISSING_FILES"
+      );
+    }
 
-  // Extract text from all three PDFs up front. If the STUDENT answer
-  // fails to extract, we don't hard-fail the whole upload — a blank/
-  // unreadable answer is itself a valid grading scenario the brief
-  // requires us to handle (it'll just grade as blank). Question paper
-  // and model answer failing to extract, though, IS a hard failure —
-  // we can't grade anything without those.
-  const [questionText, modelAnswerText] = await Promise.all([
-    extractTextFromPDF(questionPaperPath),
-    extractTextFromPDF(modelAnswerPath),
-  ]);
+    const questionPaperPath =
+      files.questionPaper[0].path;
 
-  let studentAnswerText = "";
-  try {
-    studentAnswerText = await extractTextFromPDF(studentAnswerPath);
-  } catch (err) {
-    // Treated as a blank/unreadable answer rather than an upload failure.
-    studentAnswerText = "";
-  }
+    const studentAnswerPath =
+      files.studentAnswer[0].path;
 
-  const submission = await Submission.create({
-    questionPaperPath,
-    studentAnswerPath,
-    modelAnswerPath,
-    questionText,
-    modelAnswerText,
-    studentAnswerText,
+    const modelAnswerPath =
+      files.modelAnswer[0].path;
+
+    const [
+      questionText,
+      modelAnswerText,
+    ] = await Promise.all([
+      extractTextFromPDF(
+        questionPaperPath
+      ),
+
+      extractTextFromPDF(
+        modelAnswerPath
+      ),
+    ]);
+
+    let studentAnswerText = "";
+    let studentAnswerLayout = [];
+
+    try {
+      /*
+       * IMPORTANT:
+       * Student answer is extracted with layout
+       * because annotations must be mapped to the
+       * original handwritten PDF.
+       */
+      const extracted =
+        await extractTextFromPDF(
+          studentAnswerPath,
+          {
+            withLayout: true,
+          }
+        );
+
+      if (
+        typeof extracted ===
+        "string"
+      ) {
+        studentAnswerText =
+          extracted;
+      } else {
+        studentAnswerText =
+          extracted.text || "";
+
+        studentAnswerLayout =
+          extracted.pages || [];
+      }
+    } catch (err) {
+      console.error(
+        "Student answer extraction failed:",
+        err
+      );
+
+      studentAnswerText = "";
+      studentAnswerLayout = [];
+    }
+
+    const submission =
+      await Submission.create({
+        questionPaperPath,
+        studentAnswerPath,
+        modelAnswerPath,
+
+        questionText,
+        modelAnswerText,
+
+        studentAnswerText,
+        studentAnswerLayout,
+      });
+
+    res.status(201).json({
+      message:
+        "Files received and processed",
+
+      submissionId:
+        submission._id,
+
+      textPreview: {
+        questionText:
+          questionText.slice(0, 200),
+
+        modelAnswerText:
+          modelAnswerText.slice(
+            0,
+            200
+          ),
+
+        studentAnswerText:
+          studentAnswerText.slice(
+            0,
+            500
+          ),
+      },
+
+      ocrPages:
+        studentAnswerLayout.length,
+    });
   });
 
-  res.status(201).json({
-    message: "Files received and processed",
-    submissionId: submission._id,
-    textPreview: {
-      questionText: questionText.slice(0, 200),
-      modelAnswerText: modelAnswerText.slice(0, 200),
-      studentAnswerText: studentAnswerText.slice(0, 200),
-    },
-  });
-});
-
-module.exports = { uploadSubmission };
+module.exports = {
+  uploadSubmission,
+};

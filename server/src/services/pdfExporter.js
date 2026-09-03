@@ -1,239 +1,522 @@
-// Renders a NEW annotated PDF from (studentAnswerText + current
-// annotation state). The original uploaded PDF is never opened or
-// modified here — this satisfies the brief's rule that the original
-// answer paper must stay untouched, and since this reads whatever
-// annotations exist RIGHT NOW, editing an annotation and re-exporting
-// requires no re-grading at all.
-//
-// Because annotations are anchored to TEXT OFFSETS (see Annotation.js
-// for why), we re-flow the student text into a simple word-wrapped
-// layout ourselves, tracking each word's character-offset range so we
-// know exactly which words each annotation covers, then draw a
-// colored underline/box/strikethrough beneath those words plus a
-// small numbered marker. A legend at the end lists each note in full.
+const fs = require("fs/promises");
+const {
+  PDFDocument,
+  StandardFonts,
+  rgb,
+} = require("pdf-lib");
 
-const { PDFDocument, StandardFonts, rgb } = require("pdf-lib");
+const TYPE_COLORS = {
+  underline: rgb(0.13, 0.55, 0.13),
+  strikethrough: rgb(0.8, 0.1, 0.1),
+  box: rgb(0.85, 0.55, 0),
+  comment: rgb(0.2, 0.4, 0.8),
+};
 
-// pdf-lib's standard fonts only support WinAnsi encoding — a fairly
-// small character set. Real-world documents (academic reports, OCR
-// output, copy-pasted text) commonly contain Greek letters, math
-// symbols, smart quotes, em-dashes, etc. that AREN'T in that set.
-// Rather than crashing the whole export over one unsupported
-// character, we replace common ones with safe ASCII equivalents and
-// fall back to "?" for anything else — a legible degraded PDF beats
-// a 500 error.
-//
-// IMPORTANT: every replacement below is exactly ONE character, never
-// a multi-character string. Annotation startOffset/endOffset were
-// computed against the ORIGINAL text — if a replacement changed the
-// character count, every offset after it would drift and annotations
-// would end up highlighting the wrong words. Keeping this 1:1 keeps
-// sanitized-text offsets identical to original-text offsets.
+// Highlight color depends on the rubric-point STATUS, not the
+// annotation type (type is always "highlight" for all three) — this
+// is the border/marker-number color, kept fully opaque so it's
+// legible against the page.
+const STATUS_COLORS = {
+  correct: rgb(0.13, 0.55, 0.13), // green
+  partial: rgb(0.85, 0.55, 0), // amber
+  incorrect: rgb(0.8, 0.1, 0.1), // red
+};
+
+// The FILL is the same colors but drawn translucent, like a real
+// highlighter pen — legible text underneath, nothing struck through
+// or covered.
+const HIGHLIGHT_FILL_OPACITY = 0.28;
+
 const CHAR_REPLACEMENTS = {
-  "\u2018": "'", "\u2019": "'", // smart single quotes
-  "\u201C": '"', "\u201D": '"', // smart double quotes
-  "\u2013": "-", "\u2014": "-", // en/em dash
-  "\u2026": ".", // ellipsis (single char, not "...")
-  "\u00A0": " ", // non-breaking space
-  "\u2022": "*", // bullet
-  "\u00B1": "+", "\u2248": "~", "\u2260": "=", "\u2264": "<", "\u2265": ">",
-  "\u03B1": "a", "\u03B2": "b", "\u03BC": "u", "\u03C3": "s",
-  "\u03C0": "p", "\u0394": "D", "\u03BB": "l",
+  "\u2018": "'",
+  "\u2019": "'",
+  "\u201C": '"',
+  "\u201D": '"',
+  "\u2013": "-",
+  "\u2014": "-",
+  "\u2026": "...",
+  "\u00A0": " ",
+  "\u2022": "*",
+  "\u00B1": "+",
+  "\u2248": "~",
+  "\u2260": "=",
+  "\u2264": "<",
+  "\u2265": ">",
+  "₹": "Rs",
 };
 
 function sanitizeForPDF(text) {
-  if (!text) return "";
-  let out = "";
-  for (const ch of text) {
-    if (CHAR_REPLACEMENTS[ch]) {
-      out += CHAR_REPLACEMENTS[ch];
-    } else if (ch.codePointAt(0) <= 0xff) {
-      // WinAnsi covers most of Latin-1 — anything beyond that we
-      // haven't explicitly mapped gets a visible placeholder instead
-      // of crashing the export.
-      out += ch;
+  if (!text) {
+    return "";
+  }
+
+  let output = "";
+
+  for (const character of String(text)) {
+    if (CHAR_REPLACEMENTS[character]) {
+      output += CHAR_REPLACEMENTS[character];
+    } else if (
+      character.codePointAt(0) <= 0xff
+    ) {
+      output += character;
     } else {
-      out += "?";
+      output += "?";
     }
   }
-  return out;
+
+  return output;
 }
 
-const PAGE_WIDTH = 595.28; // A4 in points
-const PAGE_HEIGHT = 841.89;
-const MARGIN = 50;
-const FONT_SIZE = 11;
-const LINE_HEIGHT = 16;
+function normalize(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+}
 
-const TYPE_COLORS = {
-  underline: rgb(0.13, 0.55, 0.13), // green — correct/partial
-  strikethrough: rgb(0.8, 0.1, 0.1), // red — incorrect
-  box: rgb(0.85, 0.55, 0), // amber — flagged
-  comment: rgb(0.2, 0.4, 0.8), // blue — unanchored note
-};
-
-// Tokenizes text into words while preserving exact character offsets,
-// so each word can be matched against an annotation's [startOffset,
-// endOffset) range later.
-function tokenize(text) {
-  const words = [];
-  const re = /\S+/g;
-  let match;
-  while ((match = re.exec(text)) !== null) {
-    words.push({ text: match[0], start: match.index, end: match.index + match[0].length });
+function resolveAnnotation(annotation, pages) {
+  /*
+   * If coordinates were already generated by OCR,
+   * use them directly.
+   */
+  if (
+    annotation.pageNumber != null &&
+    annotation.x != null &&
+    annotation.y != null
+  ) {
+    return annotation;
   }
-  return words;
-}
 
-function findAnnotationsForWord(word, annotations) {
-  return annotations.filter(
-    (a) => a.startOffset < word.end && a.endOffset > word.start && a.anchorText
+  const target = normalize(
+    annotation.anchorText
   );
+
+  if (!target) {
+    return null;
+  }
+
+  for (const page of pages || []) {
+    for (const block of page.blocks || []) {
+      const text = normalize(block.text);
+
+      if (
+        text.includes(target) ||
+        target.includes(text)
+      ) {
+        return {
+          ...annotation,
+          pageNumber: page.pageNumber,
+          x: block.bbox[0],
+          y: block.bbox[1],
+          width:
+            block.bbox[2] -
+            block.bbox[0],
+          height:
+            block.bbox[3] -
+            block.bbox[1],
+        };
+      }
+    }
+  }
+
+  return null;
 }
 
-async function buildAnnotatedPDF(studentAnswerText, annotations) {
-  const cleanText = sanitizeForPDF(studentAnswerText);
-  const cleanAnnotations = annotations.map((a) => ({
-    _id: a._id,
-    id: a.id,
-    type: a.type,
-    anchorText: sanitizeForPDF(a.anchorText),
-    startOffset: a.startOffset,
-    endOffset: a.endOffset,
-    note: sanitizeForPDF(a.note),
-  }));
+async function buildAnnotatedPDF(
+  originalPdfPath,
+  studentAnswerText,
+  studentAnswerLayout,
+  annotations
+) {
+  /*
+   * IMPORTANT:
+   *
+   * We load the ORIGINAL uploaded student PDF.
+   *
+   * We do NOT create a replacement PDF containing
+   * the OCR text.
+   */
+  const originalBytes =
+    await fs.readFile(
+      originalPdfPath
+    );
 
-  const pdfDoc = await PDFDocument.create();
-  const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-  const boldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+  const pdfDoc =
+    await PDFDocument.load(
+      originalBytes
+    );
 
-  let page = pdfDoc.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
-  let cursorY = PAGE_HEIGHT - MARGIN;
-  let cursorX = MARGIN;
-  const maxWidth = PAGE_WIDTH - MARGIN * 2;
+  const pages = pdfDoc.getPages();
 
-  page.drawText("GradeSense — Annotated Answer", {
-    x: MARGIN,
-    y: cursorY,
-    size: 14,
-    font: boldFont,
-  });
+  const font =
+    await pdfDoc.embedFont(
+      StandardFonts.Helvetica
+    );
+
+  const boldFont =
+    await pdfDoc.embedFont(
+      StandardFonts.HelveticaBold
+    );
+
+  const markers = [];
+
+  let markerCounter = 0;
+
+  for (const rawAnnotation of annotations) {
+    const annotation =
+      rawAnnotation.toObject
+        ? rawAnnotation.toObject()
+        : rawAnnotation;
+
+    const resolved =
+      resolveAnnotation(
+        annotation,
+        studentAnswerLayout
+      );
+
+    /*
+     * If we cannot locate the annotation
+     * on the original page, don't invent a
+     * random position. Put it on the feedback page.
+     */
+    if (
+      !resolved ||
+      resolved.pageNumber == null ||
+      resolved.x == null ||
+      resolved.y == null
+    ) {
+      markerCounter += 1;
+
+      markers.push({
+        number: markerCounter,
+        note: annotation.note || "",
+        type: "comment",
+      });
+
+      continue;
+    }
+
+    const pageIndex =
+      Number(resolved.pageNumber) - 1;
+
+    if (
+      pageIndex < 0 ||
+      pageIndex >= pages.length
+    ) {
+      continue;
+    }
+
+    const page =
+      pages[pageIndex];
+
+    const {
+      width: pageWidth,
+      height: pageHeight,
+    } = page.getSize();
+
+    /*
+     * OCR coordinates:
+     *
+     * [x1, y1, x2, y2]
+     *
+     * normalized 0-1000
+     * top-left origin
+     *
+     * pdf-lib:
+     *
+     * points
+     * bottom-left origin
+     */
+    const x =
+      (Number(resolved.x) / 1000) *
+      pageWidth;
+
+    const boxWidth =
+      Math.max(
+        8,
+        (Number(resolved.width || 0) /
+          1000) *
+          pageWidth
+      );
+
+    const boxHeight =
+      Math.max(
+        8,
+        (Number(resolved.height || 0) /
+          1000) *
+          pageHeight
+      );
+
+    const topY =
+      (Number(resolved.y) / 1000) *
+      pageHeight;
+
+    const y =
+      pageHeight -
+      topY -
+      boxHeight;
+
+    const color =
+      (annotation.type === "highlight"
+        ? STATUS_COLORS[annotation.status]
+        : null) ||
+      TYPE_COLORS[
+        annotation.type
+      ] ||
+      TYPE_COLORS.comment;
+
+    /*
+     * Draw the annotation directly
+     * over the ORIGINAL handwriting.
+     */
+    if (annotation.type === "highlight") {
+      // Non-destructive: a translucent colored box over the region,
+      // like a highlighter pen. Never covers/obscures the student's
+      // actual handwriting strokes, and nothing is drawn THROUGH the
+      // text (unlike the old strikethrough behavior).
+      page.drawRectangle({
+        x: x - 2,
+        y: y - 2,
+        width: boxWidth + 4,
+        height: boxHeight + 4,
+        color,
+        opacity: HIGHLIGHT_FILL_OPACITY,
+        borderColor: color,
+        borderWidth: 1,
+        borderOpacity: 0.9,
+      });
+    } else if (
+      annotation.type ===
+      "strikethrough"
+    ) {
+      page.drawLine({
+        start: {
+          x,
+          y:
+            y +
+            boxHeight / 2,
+        },
+
+        end: {
+          x:
+            x +
+            boxWidth,
+
+          y:
+            y +
+            boxHeight / 2,
+        },
+
+        thickness: 2,
+        color,
+        opacity: 0.9,
+      });
+    } else if (
+      annotation.type === "box"
+    ) {
+      page.drawRectangle({
+        x: x - 2,
+        y: y - 2,
+        width: boxWidth + 4,
+        height: boxHeight + 4,
+        borderColor: color,
+        borderWidth: 2,
+        opacity: 0.9,
+      });
+    } else {
+      page.drawLine({
+        start: {
+          x,
+          y: y - 2,
+        },
+
+        end: {
+          x:
+            x +
+            boxWidth,
+
+          y: y - 2,
+        },
+
+        thickness: 2,
+        color,
+        opacity: 0.9,
+      });
+    }
+
+    /*
+     * Number the annotation so the teacher can
+     * connect it to the feedback page.
+     */
+    markerCounter += 1;
+
+    markers.push({
+      number: markerCounter,
+      note: annotation.note || "",
+      type: annotation.type,
+      status: annotation.status || null,
+    });
+
+    page.drawText(
+      String(markerCounter),
+      {
+        x: Math.min(
+          x +
+            boxWidth +
+            3,
+          pageWidth - 15
+        ),
+
+        y: Math.min(
+          y +
+            boxHeight +
+            3,
+          pageHeight - 12
+        ),
+
+        size: 8,
+        font: boldFont,
+        color,
+      }
+    );
+  }
+
+  /*
+   * Add feedback on NEW page(s).
+   *
+   * The original answer pages remain untouched
+   * except for the visual annotation overlays.
+   */
+  let feedbackPage =
+    pdfDoc.addPage([
+      595.28,
+      841.89,
+    ]);
+
+  let cursorY = 790;
+
+  const margin = 45;
+
+  feedbackPage.drawText(
+    "GradeSense - Corrections & Feedback",
+    {
+      x: margin,
+      y: cursorY,
+      size: 16,
+      font: boldFont,
+    }
+  );
+
   cursorY -= 30;
 
-  const words = tokenize(cleanText || "");
-  const markers = []; // { number, note, type }
-  let markerCounter = 0;
-  const seenAnnotationIds = new Set();
-
-  function newPage() {
-    page = pdfDoc.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
-    cursorY = PAGE_HEIGHT - MARGIN;
-    cursorX = MARGIN;
-  }
-
-  for (const word of words) {
-    const displayText = word.text;
-    const wordWidth = font.widthOfTextAtSize(displayText, FONT_SIZE);
-
-    if (cursorX + wordWidth > MARGIN + maxWidth) {
-      cursorX = MARGIN;
-      cursorY -= LINE_HEIGHT;
-    }
-    if (cursorY < MARGIN + 100) {
-      newPage();
-    }
-
-    const matches = findAnnotationsForWord(word, cleanAnnotations);
-
-    page.drawText(displayText, {
-      x: cursorX,
-      y: cursorY,
-      size: FONT_SIZE,
-      font,
-      color: rgb(0, 0, 0),
-    });
-
-    if (matches.length > 0) {
-      const primary = matches[0];
-      const color = TYPE_COLORS[primary.type] || rgb(0, 0, 0);
-
-      if (primary.type === "strikethrough") {
-        page.drawLine({
-          start: { x: cursorX, y: cursorY + FONT_SIZE / 3 },
-          end: { x: cursorX + wordWidth, y: cursorY + FONT_SIZE / 3 },
-          thickness: 1.2,
-          color,
-        });
-      } else if (primary.type === "box") {
-        page.drawRectangle({
-          x: cursorX - 2,
-          y: cursorY - 2,
-          width: wordWidth + 4,
-          height: FONT_SIZE + 4,
-          borderColor: color,
-          borderWidth: 1,
-        });
-      } else {
-        // underline (default)
-        page.drawLine({
-          start: { x: cursorX, y: cursorY - 2 },
-          end: { x: cursorX + wordWidth, y: cursorY - 2 },
-          thickness: 1.2,
-          color,
-        });
+  if (markers.length === 0) {
+    feedbackPage.drawText(
+      "No annotations were generated.",
+      {
+        x: margin,
+        y: cursorY,
+        size: 11,
+        font,
       }
-
-      // Register a marker the first time we see this annotation
-      const annId = String(primary._id || primary.id);
-      if (!seenAnnotationIds.has(annId)) {
-        seenAnnotationIds.add(annId);
-        markerCounter += 1;
-        markers.push({ number: markerCounter, note: primary.note, type: primary.type });
-        page.drawText(String(markerCounter), {
-          x: cursorX + wordWidth + 2,
-          y: cursorY + 6,
-          size: 7,
-          font: boldFont,
-          color,
-        });
-      }
-    }
-
-    cursorX += wordWidth + font.widthOfTextAtSize(" ", FONT_SIZE);
+    );
   }
-
-  // --- Unanchored comments (evidence didn't match a text span) ---
-  const unanchored = cleanAnnotations.filter((a) => !a.anchorText);
-  for (const a of unanchored) {
-    markerCounter += 1;
-    // Note: annotationGenerator already prefixes unanchored notes with the
-    // rubric point description (e.g. "[Correct placement of ammeter...] ...").
-    // Don't add a second, redundant "[General]" label on top of that here.
-    markers.push({ number: markerCounter, note: a.note, type: "comment" });
-  }
-
-  // --- Legend page ---
-  newPage();
-  page.drawText("Corrections & Feedback", { x: MARGIN, y: cursorY, size: 14, font: boldFont });
-  cursorY -= 26;
 
   for (const marker of markers) {
-    if (cursorY < MARGIN) newPage();
-    const color = TYPE_COLORS[marker.type] || rgb(0, 0, 0);
-    const label = `${marker.number}. ${marker.note}`;
-    page.drawText(label, {
-      x: MARGIN,
-      y: cursorY,
-      size: 10,
-      font,
-      color,
-      maxWidth: PAGE_WIDTH - MARGIN * 2,
-      lineHeight: 12,
-    });
-    cursorY -= 24;
+    const note =
+      sanitizeForPDF(
+        `${marker.number}. ${marker.note}`
+      );
+
+    const color =
+      (marker.type === "highlight"
+        ? STATUS_COLORS[marker.status]
+        : null) ||
+      TYPE_COLORS[
+        marker.type
+      ] ||
+      TYPE_COLORS.comment;
+
+    const lines =
+      wrapText(
+        note,
+        font,
+        10,
+        500
+      );
+
+    for (const line of lines) {
+      if (cursorY < 55) {
+        feedbackPage =
+          pdfDoc.addPage([
+            595.28,
+            841.89,
+          ]);
+
+        cursorY = 790;
+      }
+
+      feedbackPage.drawText(
+        line,
+        {
+          x: margin,
+          y: cursorY,
+          size: 10,
+          font,
+          color,
+        }
+      );
+
+      cursorY -= 15;
+    }
+
+    cursorY -= 7;
   }
 
   return pdfDoc.save();
 }
 
-module.exports = { buildAnnotatedPDF };
+function wrapText(
+  text,
+  font,
+  size,
+  maxWidth
+) {
+  const words =
+    text.split(/\s+/);
+
+  const lines = [];
+
+  let line = "";
+
+  for (const word of words) {
+    const candidate =
+      line
+        ? `${line} ${word}`
+        : word;
+
+    if (
+      font.widthOfTextAtSize(
+        candidate,
+        size
+      ) <= maxWidth
+    ) {
+      line = candidate;
+    } else {
+      if (line) {
+        lines.push(line);
+      }
+
+      line = word;
+    }
+  }
+
+  if (line) {
+    lines.push(line);
+  }
+
+  return lines;
+}
+
+module.exports = {
+  buildAnnotatedPDF,
+};
