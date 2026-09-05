@@ -30,6 +30,52 @@ describe("gradeSubmission", () => {
     );
   });
 
+  it("awards full marks on every rubric point for a fully correct answer", async () => {
+    const result = await gradeSubmission({
+      ...baseArgs,
+      studentAnswerText: "A complete, fully correct answer.",
+      forceScenario: "full_marks",
+    });
+    expect(result.totalMarks).toBe(result.maxMarks);
+    expect(
+      result.rubricPoints.every((p) => p.status === "correct")
+    ).toBe(true);
+    expect(
+      result.rubricPoints.every((p) => p.awardedMarks === p.maxMarks)
+    ).toBe(true);
+  });
+
+  it("awards partial marks on every rubric point for a partially correct answer", async () => {
+    const result = await gradeSubmission({
+      ...baseArgs,
+      studentAnswerText: "An answer that gets halfway there.",
+      forceScenario: "partial_marks",
+    });
+    expect(result.totalMarks).toBeGreaterThan(0);
+    expect(result.totalMarks).toBeLessThan(result.maxMarks);
+    expect(
+      result.rubricPoints.every((p) => p.status === "partial")
+    ).toBe(true);
+  });
+
+  it("awards zero marks with status 'incorrect' (not 'missing') for a wrong but attempted answer", async () => {
+    const result = await gradeSubmission({
+      ...baseArgs,
+      studentAnswerText: "An answer that is confidently wrong.",
+      forceScenario: "zero_marks",
+    });
+    expect(result.totalMarks).toBe(0);
+    expect(
+      result.rubricPoints.every((p) => p.status === "incorrect")
+    ).toBe(true);
+    // Distinguishes "attempted and wrong" from "not attempted" —
+    // a rubric-wise breakdown that collapses both into "missing"
+    // would mislead a teacher into thinking nothing was written.
+    expect(
+      result.rubricPoints.every((p) => p.status !== "missing")
+    ).toBe(true);
+  });
+
   it("clamps marks that exceed the rubric maximum", async () => {
     const result = await gradeSubmission({
       ...baseArgs,
@@ -71,5 +117,39 @@ describe("gradeSubmission", () => {
       forceScenario: "over_max",
     });
     expect(result.totalMarks).toBeLessThanOrEqual(result.maxMarks);
+  });
+
+  it("flags for human review when the rubric itself had to fall back, even on an otherwise-clean grade", async () => {
+    const result = await gradeSubmission({
+      ...baseArgs,
+      studentAnswerText: "A complete, fully correct answer.",
+      forceScenario: "full_marks",
+      rubricParseWarning: "No valid rubric points survived validation",
+    });
+    expect(result.needsHumanReview).toBe(true);
+    expect(result.reviewReason).toMatch(/rubric/i);
+    // The grade itself is still computed and usable, not blocked —
+    // low confidence is a signal to check, not a refusal to grade.
+    expect(result.totalMarks).toBe(result.maxMarks);
+  });
+
+  it("flags for human review on a blank answer when the rubric fell back (blank grade alone shouldn't hide a bad rubric)", async () => {
+    const result = await gradeSubmission({
+      ...baseArgs,
+      studentAnswerText: "",
+      rubricParseWarning: "Rubric-parsing output was not valid JSON",
+    });
+    expect(result.totalMarks).toBe(0);
+    expect(result.needsHumanReview).toBe(true);
+    expect(result.reviewReason).toMatch(/rubric/i);
+  });
+
+  it("does not flag for human review when no rubric warning is present", async () => {
+    const result = await gradeSubmission({
+      ...baseArgs,
+      studentAnswerText: "A complete, fully correct answer.",
+      forceScenario: "full_marks",
+    });
+    expect(result.needsHumanReview).toBe(false);
   });
 });

@@ -77,6 +77,18 @@ const AnnotationSchema =
         enum: ["system", "user"],
         default: "system",
       },
+
+      // True once a teacher has directly edited/moved/resized an
+      // auto-generated annotation (createdBy stays "system" — it
+      // still traces back to the AI's original evidence match).
+      // Without this, re-grading always wipes and regenerates every
+      // "system" annotation, which would silently discard a
+      // teacher's manual correction/reposition the moment anyone
+      // re-grades the same submission.
+      editedByUser: {
+        type: Boolean,
+        default: false,
+      },
     },
     {
       timestamps: true,

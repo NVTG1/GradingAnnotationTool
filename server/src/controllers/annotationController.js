@@ -107,6 +107,11 @@ const updateAnnotation =
       }
     }
 
+    // Any edit at all — including a drag/resize that only touches
+    // x/y/width/height — marks this annotation as teacher-edited so
+    // a later re-grade won't wipe it out (see gradeController).
+    updates.editedByUser = true;
+
     const annotation =
       await Annotation.findByIdAndUpdate(
         annotationId,

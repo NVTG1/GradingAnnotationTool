@@ -192,6 +192,89 @@ function buildCandidates(page) {
   return candidates;
 }
 
+function wordSimilarity(a, b) {
+  const aa = normalize(a);
+  const bb = normalize(b);
+
+  if (!aa || !bb) return 0;
+  if (aa === bb) return 1;
+  if (aa.length < 3 || bb.length < 3) return 0;
+
+  const distance = levenshtein(aa, bb);
+
+  return Math.max(
+    0,
+    1 - distance / Math.max(aa.length, bb.length)
+  );
+}
+
+function orderedTokenScore(target, candidate) {
+  const targetWords = significantWords(target);
+  const candidateWords = significantWords(candidate);
+
+  if (!targetWords.length || !candidateWords.length) {
+    return 0;
+  }
+
+  let targetIndex = 0;
+  let matched = 0;
+
+  for (const candidateWord of candidateWords) {
+    if (targetIndex >= targetWords.length) break;
+
+    const score = wordSimilarity(
+      targetWords[targetIndex],
+      candidateWord
+    );
+
+    if (score >= 0.62) {
+      matched++;
+      targetIndex++;
+    }
+  }
+
+  return matched / targetWords.length;
+}
+
+function candidateScore(target, candidate) {
+  const targetWords = significantWords(target);
+  const candidateWords = significantWords(candidate);
+
+  if (!targetWords.length || !candidateWords.length) {
+    return {
+      score: 0,
+      coverage: 0,
+      ordered: 0,
+    };
+  }
+
+  const coverage = tokenSimilarity(
+    target,
+    candidate
+  );
+
+  const ordered = orderedTokenScore(
+    target,
+    candidate
+  );
+
+  const char = similarity(
+    target,
+    candidate
+  );
+
+  const score =
+    coverage * 0.55 +
+    ordered * 0.3 +
+    char * 0.15;
+
+  return {
+    score,
+    coverage,
+    ordered,
+  };
+}
+
 function findLayoutMatch(evidence, pages) {
   const target = normalize(evidence);
 
@@ -199,98 +282,231 @@ function findLayoutMatch(evidence, pages) {
     return null;
   }
 
+  let bestExact = null;
   let best = null;
 
   for (const page of pages) {
-    const candidates = buildCandidates(page);
+    const blocks = Array.isArray(page?.blocks)
+      ? page.blocks.filter(
+          (block) =>
+            typeof block?.text === "string" &&
+            block.text.trim() &&
+            Array.isArray(block.bbox) &&
+            block.bbox.length === 4
+        )
+      : [];
 
-    for (const candidate of candidates) {
-      const candidateText = normalize(candidate.text);
+    if (!blocks.length) continue;
 
-      if (!candidateText) continue;
+    /*
+     * Evidence can span multiple physical handwriting
+     * lines. We therefore compare consecutive OCR lines
+     * rather than randomly comparing unrelated text.
+     */
+    const maxWindow = Math.min(
+      8,
+      blocks.length
+    );
 
-      // A candidate that is the same as, or fully CONTAINS, the
-      // evidence text is a complete match — the whole evidence
-      // string is guaranteed to be inside this window's blocks, so
-      // it's safe to stop immediately (windows are checked smallest
-      // first, so this is also the tightest such window).
-      //
-      // The reverse case — the evidence CONTAINS the candidate
-      // (i.e. this candidate is only a prefix/fragment of a longer,
-      // multi-line evidence string) — is NOT a complete match. That
-      // used to also return immediately with score 1, which meant a
-      // 2+ line evidence string would lock onto just its first line
-      // and the resulting box would stop short of the rest of the
-      // text it was supposed to cover. Instead we let it fall
-      // through to scoring, boosted by how much of the evidence it
-      // covers, so a bigger window that covers more of the evidence
-      // can still win.
-      if (
-        candidateText === target ||
-        candidateText.includes(target)
+    for (
+      let windowSize = 1;
+      windowSize <= maxWindow;
+      windowSize++
+    ) {
+      for (
+        let i = 0;
+        i <= blocks.length - windowSize;
+        i++
       ) {
-        const bbox = unionBBox(candidate.blocks);
+        const windowBlocks =
+          blocks.slice(
+            i,
+            i + windowSize
+          );
 
-        if (bbox) {
-          return {
-            pageNumber: page.pageNumber,
-            bbox,
-            text: candidate.text,
-            score: 1,
-          };
+        const candidateText =
+          normalize(
+            windowBlocks
+              .map(
+                (block) => block.text
+              )
+              .join(" ")
+          );
+
+        if (!candidateText) continue;
+
+        /*
+         * EXACT MATCH
+         *
+         * This is the preferred path. If the evidence
+         * exists inside the OCR lines, use those exact
+         * physical lines rather than fuzzy matching another
+         * part of the page.
+         */
+        if (
+          candidateText === target ||
+          candidateText.includes(target)
+        ) {
+          const bbox =
+            unionBBox(windowBlocks);
+
+          if (bbox) {
+            const exact = {
+              pageNumber:
+                page.pageNumber,
+
+              bbox,
+
+              text:
+                windowBlocks
+                  .map(
+                    (block) =>
+                      block.text
+                  )
+                  .join(" "),
+
+              score: 1,
+
+              blockCount:
+                windowBlocks.length,
+            };
+
+            /*
+             * Don't immediately return. A smaller window
+             * may contain the same evidence and give us a
+             * much tighter highlight.
+             */
+            if (
+              !bestExact ||
+              exact.blockCount <
+                bestExact.blockCount
+            ) {
+              bestExact = exact;
+            }
+          }
+
+          continue;
         }
-      }
 
-      const coverageBoost = target.includes(candidateText)
-        ? candidateText.length / target.length
-        : 0;
+        /*
+         * FUZZY MATCH
+         *
+         * Only accept it when:
+         * 1. Enough meaningful words match.
+         * 2. The words occur in approximately the same order.
+         * 3. Overall similarity is strong.
+         *
+         * This prevents generic words from causing a
+         * highlight to jump to an unrelated line.
+         */
+        const metrics =
+          candidateScore(
+            target,
+            candidateText
+          );
 
-      const tokenScore = Math.max(
-        tokenSimilarity(target, candidateText),
-        coverageBoost
-      );
+        const targetWordCount =
+          significantWords(target).length;
 
-      const charScore = similarity(
-        target,
-        candidateText
-      );
+        const minCoverage =
+          targetWordCount >= 8
+            ? 0.58
+            : 0.68;
 
-      const score =
-        tokenScore * 0.75 +
-        charScore * 0.25;
+        const minOrdered =
+          targetWordCount >= 8
+            ? 0.35
+            : 0.45;
 
-      // Prefer a strictly better score; on a tie, prefer the
-      // tighter (fewer-line) window so we don't needlessly balloon
-      // the highlighted box when a short candidate would do.
-      const isBetter =
-        !best ||
-        score > best.score ||
-        (score === best.score &&
-          candidate.blocks.length < best.blockCount);
+        if (
+          metrics.coverage <
+            minCoverage ||
+          metrics.ordered <
+            minOrdered ||
+          metrics.score < 0.62
+        ) {
+          continue;
+        }
 
-      if (isBetter) {
-        const bbox = unionBBox(candidate.blocks);
+        const bbox =
+          unionBBox(windowBlocks);
 
-        if (bbox) {
-          best = {
-            pageNumber: page.pageNumber,
-            bbox,
-            text: candidate.text,
-            score,
-            blockCount: candidate.blocks.length,
-          };
+        if (!bbox) continue;
+
+        const candidate = {
+          pageNumber:
+            page.pageNumber,
+
+          bbox,
+
+          text:
+            windowBlocks
+              .map(
+                (block) =>
+                  block.text
+              )
+              .join(" "),
+
+          score: metrics.score,
+          coverage:
+            metrics.coverage,
+          ordered:
+            metrics.ordered,
+
+          blockCount:
+            windowBlocks.length,
+        };
+
+        const isBetter =
+          !best ||
+          candidate.score >
+            best.score + 0.015 ||
+          (
+            Math.abs(
+              candidate.score -
+                best.score
+            ) <= 0.015 &&
+            candidate.coverage >
+              best.coverage
+          ) ||
+          (
+            Math.abs(
+              candidate.score -
+                best.score
+            ) <= 0.015 &&
+            Math.abs(
+              candidate.coverage -
+                best.coverage
+            ) <= 0.02 &&
+            candidate.blockCount <
+              best.blockCount
+          );
+
+        if (isBetter) {
+          best = candidate;
         }
       }
     }
   }
 
-  // Raised from 0.30: that threshold accepted almost any line as a
-  // "match" for any evidence string, which is why highlight boxes
-  // routinely landed over unrelated text. A low-confidence guess is
-  // worse than no box at all — below this bar we return null and the
-  // caller falls back to an unpositioned comment instead of drawing a
-  // misleading highlight.
-  if (best && best.score >= 0.55) {
+  /*
+   * Exact OCR evidence is always safer than fuzzy evidence.
+   */
+  if (bestExact) {
+    return bestExact;
+  }
+
+  /*
+   * If we cannot confidently locate the evidence,
+   * DO NOT draw a highlight somewhere random.
+   *
+   * The feedback can still be shown as a comment and
+   * the teacher can manually annotate it.
+   */
+  if (
+    best &&
+    best.score >= 0.62
+  ) {
     return best;
   }
 

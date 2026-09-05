@@ -42,9 +42,24 @@ Respond with JSON of the shape:
 }`;
 }
 
-function computeConfidence({ wasClamped, llmStatus, rubricPoints }) {
+function computeConfidence({
+  wasClamped,
+  llmStatus,
+  rubricPoints,
+  rubricParseWarning,
+}) {
   let confidence = 1.0;
   const reasons = [];
+
+  if (rubricParseWarning) {
+    // The rubric itself couldn't be reliably extracted from the
+    // model answer, so every mark awarded against it is on shakier
+    // ground than usual — this needs to be visible to whoever
+    // reviews the grade, not silently absorbed into a normal-looking
+    // confidence score.
+    confidence -= 0.35;
+    reasons.push(`Rubric extraction fell back: ${rubricParseWarning}`);
+  }
 
   if (llmStatus === "repaired" || wasClamped) {
     confidence -= 0.4;
@@ -75,6 +90,7 @@ async function gradeSubmission({
   rubricDefinition,
   studentAnswerText,
   forceScenario,
+  rubricParseWarning,
 }) {
   if (!studentAnswerText || !studentAnswerText.trim()) {
     const rubricPoints = rubricDefinition.map((rp) => ({
@@ -87,6 +103,24 @@ async function gradeSubmission({
       feedback: "No answer was provided for this point.",
     }));
     const maxMarks = rubricDefinition.reduce((s, p) => s + p.maxMarks, 0);
+
+    // Blank answer is still a "known, confident outcome" for the
+    // GRADE itself (0 marks is unambiguous) — but if the rubric had
+    // to fall back, that's a separate, still-relevant concern: the
+    // maxMarks breakdown shown to the teacher may not reflect the
+    // real rubric, blank answer or not.
+    if (rubricParseWarning) {
+      return {
+        rubricPoints,
+        totalMarks: 0,
+        maxMarks,
+        confidence: 0.65,
+        needsHumanReview: true,
+        reviewReason: `Rubric extraction fell back: ${rubricParseWarning}`,
+        llmStatus: "ok",
+      };
+    }
+
     return {
       rubricPoints,
       totalMarks: 0,
@@ -110,6 +144,11 @@ async function gradeSubmission({
   try {
     rawText = await gradeWithLLM(prompt, { forceScenario });
   } catch (err) {
+    const reasons = [`LLM error: ${err.message}`];
+    if (rubricParseWarning) {
+      reasons.push(`Rubric extraction fell back: ${rubricParseWarning}`);
+    }
+
     return {
       rubricPoints: rubricDefinition.map((rp) => ({
         pointId: rp.pointId,
@@ -124,7 +163,7 @@ async function gradeSubmission({
       maxMarks: rubricDefinition.reduce((s, p) => s + p.maxMarks, 0),
       confidence: 0,
       needsHumanReview: true,
-      reviewReason: `LLM error: ${err.message}`,
+      reviewReason: reasons.join("; "),
       llmStatus: "failed",
     };
   }
@@ -149,6 +188,7 @@ async function gradeSubmission({
     wasClamped,
     llmStatus,
     rubricPoints,
+    rubricParseWarning,
   });
 
   return {

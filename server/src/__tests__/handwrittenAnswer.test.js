@@ -85,6 +85,36 @@ describe("extractTextFromPDF — scanned/handwritten fallback", () => {
     });
   });
 
+  it("treats a corrupt/unparseable PDF as an empty text layer and falls back to OCR instead of crashing", async () => {
+    // readTextLayer() catches PDFParse errors internally and returns
+    // "" — this asserts that contract holds: a corrupt file should
+    // degrade to the OCR path, not bubble up an unhandled exception.
+    PDFParse.mockImplementation(() => ({
+      getText: () => Promise.reject(new Error("Invalid PDF structure")),
+      destroy: () => Promise.resolve(),
+    }));
+    renderPdfPagesToImages.mockResolvedValue([Buffer.from("fake-page-1-png")]);
+    transcribeHandwrittenImages.mockResolvedValue("Recovered via OCR fallback.");
+
+    const text = await extractTextFromPDF(tmpFile);
+
+    expect(renderPdfPagesToImages).toHaveBeenCalledWith(tmpFile);
+    expect(text).toBe("Recovered via OCR fallback.");
+  });
+
+  it("throws a clean 400 (not a crash) when a corrupt PDF also fails OCR", async () => {
+    PDFParse.mockImplementation(() => ({
+      getText: () => Promise.reject(new Error("Invalid PDF structure")),
+      destroy: () => Promise.resolve(),
+    }));
+    renderPdfPagesToImages.mockRejectedValue(new Error("Cannot render corrupt PDF"));
+
+    await expect(extractTextFromPDF(tmpFile)).rejects.toMatchObject({
+      code: "PDF_PARSE_FAILED",
+      status: 400,
+    });
+  });
+
   it("never calls OCR when the PDF already has a real text layer", async () => {
     mockTextLayer("Q1: A circuit is a closed path that allows current to flow, powered by a battery.");
 

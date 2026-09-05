@@ -14,6 +14,29 @@ async function gradeWithLLM(prompt, { forceScenario, mode = "grade" } = {}) {
   throw new AppError(`Unknown LLM_PROVIDER: ${provider}`, 500, "BAD_CONFIG");
 }
 
+// Pulls the RUBRIC POINTS JSON block back out of the prompt built by
+// gradingService.buildPrompt, so the deterministic mock scenarios
+// below can generate one entry per real rubric point instead of a
+// single hardcoded "p1" — that made the old "over_max" scenario only
+// exercise clamping for whichever rubric happened to have a point
+// literally called "p1", and made it impossible to write a
+// deterministic "every point correct" / "every point wrong" test
+// against an arbitrary rubric.
+function extractRubricDefinitionFromPrompt(prompt) {
+  const rubricMatch = prompt.match(
+    /RUBRIC POINTS \(award marks only up to maxMarks for each\):\n([\s\S]*?)\n\nSTUDENT ANSWER:/,
+  );
+
+  if (!rubricMatch) return [];
+
+  try {
+    const parsed = JSON.parse(rubricMatch[1]);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
 async function mockLLM(prompt, forceScenario, mode) {
   if (forceScenario === "api_failure") {
     throw new AppError("Simulated LLM API failure", 502, "LLM_UNAVAILABLE");
@@ -43,6 +66,56 @@ async function mockLLM(prompt, forceScenario, mode) {
     });
   }
 
+  // Deterministic "fully correct" / "partially correct" / "fully
+  // incorrect" scenarios, generated from the ACTUAL rubric points in
+  // this prompt (not a hardcoded single point) so tests can assert
+  // exact totals against whatever rubric they pass in, independent
+  // of the free-text heuristic matcher below.
+  if (forceScenario === "full_marks") {
+    const rubricDefinition = extractRubricDefinitionFromPrompt(prompt);
+
+    return JSON.stringify({
+      rubricPoints: rubricDefinition.map((point) => ({
+        pointId: point.pointId,
+        awardedMarks: point.maxMarks,
+        status: "correct",
+        evidence:
+          "This directly and fully addresses the rubric point as required.",
+        feedback: "Fully correct — matches the expected answer.",
+      })),
+    });
+  }
+
+  if (forceScenario === "partial_marks") {
+    const rubricDefinition = extractRubricDefinitionFromPrompt(prompt);
+
+    return JSON.stringify({
+      rubricPoints: rubricDefinition.map((point) => ({
+        pointId: point.pointId,
+        awardedMarks: Math.max(0, Math.round(point.maxMarks / 2)),
+        status: "partial",
+        evidence:
+          "This partially addresses the rubric point but leaves out a required detail.",
+        feedback: "Partial credit — the core idea is present but incomplete.",
+      })),
+    });
+  }
+
+  if (forceScenario === "zero_marks") {
+    const rubricDefinition = extractRubricDefinitionFromPrompt(prompt);
+
+    return JSON.stringify({
+      rubricPoints: rubricDefinition.map((point) => ({
+        pointId: point.pointId,
+        awardedMarks: 0,
+        status: "incorrect",
+        evidence:
+          "This answer addresses the topic but states something factually wrong.",
+        feedback: "Incorrect — this does not match the expected answer.",
+      })),
+    });
+  }
+
   return JSON.stringify({
     rubricPoints: heuristicGrade(prompt),
   });
@@ -57,11 +130,7 @@ function extractRubricFromDocument(prompt) {
   let pendingMarks = null;
 
   function flushAsPoint(description, maxMarks) {
-    if (
-      maxMarks >= 1 &&
-      maxMarks <= 20 &&
-      description.length >= 15
-    ) {
+    if (maxMarks >= 1 && maxMarks <= 20 && description.length >= 15) {
       points.push({
         pointId: `p${points.length + 1}`,
         description,
@@ -109,7 +178,7 @@ function extractRubricFromDocument(prompt) {
 
       flushAsPoint(
         [...buffer, inline[1].trim()].join(" ").trim(),
-        Number(inline[2])
+        Number(inline[2]),
       );
 
       buffer = [];
@@ -120,10 +189,7 @@ function extractRubricFromDocument(prompt) {
     buffer.push(line);
 
     if (pendingMarks !== null) {
-      flushAsPoint(
-        buffer.join(" ").trim(),
-        pendingMarks
-      );
+      flushAsPoint(buffer.join(" ").trim(), pendingMarks);
 
       buffer = [];
       pendingMarks = null;
@@ -213,7 +279,7 @@ const STOPWORDS = new Set([
 
 function significantWords(text) {
   return (text.toLowerCase().match(/[a-z]+/g) || []).filter(
-    (w) => w.length > 3 && !STOPWORDS.has(w)
+    (w) => w.length > 3 && !STOPWORDS.has(w),
   );
 }
 
@@ -229,10 +295,7 @@ function splitIntoSections(text) {
 
   for (let i = 0; i < matches.length; i++) {
     const start = matches[i].index;
-    const end =
-      i + 1 < matches.length
-        ? matches[i + 1].index
-        : text.length;
+    const end = i + 1 < matches.length ? matches[i + 1].index : text.length;
 
     sections.push(text.slice(start, end));
   }
@@ -241,35 +304,27 @@ function splitIntoSections(text) {
 }
 
 function heuristicGrade(prompt) {
-  const modelMatch = prompt.match(
-    /MODEL ANSWER:\n([\s\S]*?)\n\nRUBRIC POINTS/
-  );
+  const modelMatch = prompt.match(/MODEL ANSWER:\n([\s\S]*?)\n\nRUBRIC POINTS/);
 
   const rubricMatch = prompt.match(
-    /RUBRIC POINTS \(award marks only up to maxMarks for each\):\n([\s\S]*?)\n\nSTUDENT ANSWER:/
+    /RUBRIC POINTS \(award marks only up to maxMarks for each\):\n([\s\S]*?)\n\nSTUDENT ANSWER:/,
   );
 
   const studentMatch = prompt.match(
-    /STUDENT ANSWER:\n([\s\S]*?)\n\nFor each rubric point/
+    /STUDENT ANSWER:\n([\s\S]*?)\n\nFor each rubric point/,
   );
 
   let rubricDefinition = [];
 
   try {
-    rubricDefinition = rubricMatch
-      ? JSON.parse(rubricMatch[1])
-      : [];
+    rubricDefinition = rubricMatch ? JSON.parse(rubricMatch[1]) : [];
   } catch {
     rubricDefinition = [];
   }
 
-  const modelAnswerText = modelMatch
-    ? modelMatch[1]
-    : "";
+  const modelAnswerText = modelMatch ? modelMatch[1] : "";
 
-  const studentAnswerText = studentMatch
-    ? studentMatch[1]
-    : "";
+  const studentAnswerText = studentMatch ? studentMatch[1] : "";
 
   const modelSections = splitIntoSections(modelAnswerText);
   const studentSections = splitIntoSections(studentAnswerText);
@@ -294,7 +349,7 @@ function heuristicGrade(prompt) {
     const lowerStudent = scopedStudent.toLowerCase();
 
     const matchedKeywords = keywords.filter((keyword) =>
-      lowerStudent.includes(keyword)
+      lowerStudent.includes(keyword),
     );
 
     const ratio = keywords.length
@@ -309,14 +364,8 @@ function heuristicGrade(prompt) {
       awardedMarks = point.maxMarks;
     } else if (ratio >= 0.25) {
       status = "partial";
-      awardedMarks = Math.max(
-        1,
-        Math.floor(point.maxMarks / 2)
-      );
-    } else if (
-      matchedKeywords.length > 0 &&
-      lowerStudent.length > 20
-    ) {
+      awardedMarks = Math.max(1, Math.floor(point.maxMarks / 2));
+    } else if (matchedKeywords.length > 0 && lowerStudent.length > 20) {
       status = "incorrect";
       awardedMarks = 0;
     } else {
@@ -326,10 +375,7 @@ function heuristicGrade(prompt) {
 
     let evidence = "";
 
-    if (
-      status !== "missing" &&
-      matchedKeywords.length > 0
-    ) {
+    if (status !== "missing" && matchedKeywords.length > 0) {
       const sentences = scopedStudent
         .split(/(?<=[.!?])\s+|\n+/)
         .map((s) => s.trim())
@@ -341,9 +387,7 @@ function heuristicGrade(prompt) {
       for (const sentence of sentences) {
         const lower = sentence.toLowerCase();
 
-        const count = matchedKeywords.filter((k) =>
-          lower.includes(k)
-        ).length;
+        const count = matchedKeywords.filter((k) => lower.includes(k)).length;
 
         if (count > bestCount) {
           bestCount = count;
@@ -358,10 +402,10 @@ function heuristicGrade(prompt) {
       status === "correct"
         ? "Covers this point adequately."
         : status === "partial"
-        ? `Partially addresses "${point.description}" — expand with more detail.`
-        : status === "incorrect"
-        ? `The answer doesn't correctly address "${point.description}" — review and correct this point.`
-        : `No clear evidence of "${point.description}" in the answer.`;
+          ? `Partially addresses "${point.description}" — expand with more detail.`
+          : status === "incorrect"
+            ? `The answer doesn't correctly address "${point.description}" — review and correct this point.`
+            : `No clear evidence of "${point.description}" in the answer.`;
 
     return {
       pointId: point.pointId,
@@ -385,12 +429,10 @@ function heuristicGrade(prompt) {
  */
 async function transcribeHandwrittenImages(
   imageBuffers,
-  { forceScenario, withLayout = false } = {}
+  { forceScenario, withLayout = false } = {},
 ) {
   const provider =
-    process.env.OCR_PROVIDER ||
-    process.env.LLM_PROVIDER ||
-    "mock";
+    process.env.OCR_PROVIDER || process.env.LLM_PROVIDER || "mock";
 
   console.log("OCR provider:", provider);
 
@@ -398,10 +440,7 @@ async function transcribeHandwrittenImages(
 
   for (const buffer of imageBuffers) {
     if (provider === "mock") {
-      const text = mockTranscribeImage(
-        buffer,
-        forceScenario
-      );
+      const text = mockTranscribeImage(buffer, forceScenario);
 
       if (withLayout) {
         pages.push({
@@ -417,10 +456,7 @@ async function transcribeHandwrittenImages(
     }
 
     if (provider === "groq") {
-      const result = await callGroqVision(
-        buffer,
-        { withLayout }
-      );
+      const result = await callGroqVision(buffer, { withLayout });
 
       if (withLayout) {
         pages.push({
@@ -435,11 +471,7 @@ async function transcribeHandwrittenImages(
       continue;
     }
 
-    throw new AppError(
-      `Unknown OCR_PROVIDER: ${provider}`,
-      500,
-      "BAD_CONFIG"
-    );
+    throw new AppError(`Unknown OCR_PROVIDER: ${provider}`, 500, "BAD_CONFIG");
   }
 
   if (withLayout) {
@@ -451,28 +483,17 @@ async function transcribeHandwrittenImages(
 
 function mockTranscribeImage(buffer, forceScenario) {
   if (forceScenario === "vision_failure") {
-    throw new AppError(
-      "Simulated vision API failure",
-      502,
-      "LLM_UNAVAILABLE"
-    );
+    throw new AppError("Simulated vision API failure", 502, "LLM_UNAVAILABLE");
   }
 
   return `[MOCK OCR TRANSCRIPTION of a ${buffer.length}-byte page image]`;
 }
 
-async function callGroqVision(
-  imageBuffer,
-  { withLayout = false } = {}
-) {
+async function callGroqVision(imageBuffer, { withLayout = false } = {}) {
   const apiKey = process.env.GROQ_API_KEY;
 
   if (!apiKey) {
-    throw new AppError(
-      "GROQ_API_KEY not set",
-      500,
-      "BAD_CONFIG"
-    );
+    throw new AppError("GROQ_API_KEY not set", 500, "BAD_CONFIG");
   }
 
   const prompt = withLayout
@@ -511,6 +532,10 @@ VERY IMPORTANT:
 14. Do not put commentary outside JSON.
 15. If handwriting is difficult to read, make your best OCR attempt rather than omitting the block.
 16. Sanity check before answering: if a page has about N visible lines of handwriting, you should return roughly N blocks (plus a few more if some lines contain two distinct sentences). A block whose bbox height is much taller than the others is almost always wrong — it means you merged lines. Split it.
+17. CRITICAL CONSISTENCY RULE: the "text" field MUST be reconstructed from the "blocks" in exact top-to-bottom order. Do NOT independently transcribe the page into "text". The spelling, punctuation and wording in "text" must be identical to the corresponding block text.
+18. Each block's bbox MUST belong to the exact physical line represented by that block's text.
+19. Never move a bbox to a nearby blank line, notebook rule, margin or another line merely because it looks visually cleaner.
+20. The y coordinate is measured from the TOP of the complete page image, not from the first handwritten line.
 
 Example of WRONG output (do not do this):
 { "text": "The switch is used to open and close the circuit. When the switch is closed current flows...", "bbox": [30, 200, 780, 280] }
@@ -541,104 +566,83 @@ Return only the transcription.
   let response;
 
   try {
-    response = await fetch(
-      "https://api.groq.com/openai/v1/chat/completions",
-      {
-        method: "POST",
+    response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
 
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
-        },
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
 
-        body: JSON.stringify({
-          model: "qwen/qwen3.6-27b",
+      body: JSON.stringify({
+        model: "qwen/qwen3.6-27b",
 
-          temperature: 0,
+        temperature: 0,
 
-          max_completion_tokens: withLayout ? 8000 : 4096,
+        max_completion_tokens: withLayout ? 8000 : 4096,
 
-          ...(withLayout
-            ? { response_format: { type: "json_object" } }
-            : {}),
+        ...(withLayout ? { response_format: { type: "json_object" } } : {}),
 
-          reasoning_effort: "none",
+        reasoning_effort: "none",
 
-          messages: [
-            {
-              role: "user",
+        messages: [
+          {
+            role: "user",
 
-              content: [
-                {
-                  type: "text",
-                  text: prompt,
+            content: [
+              {
+                type: "text",
+                text: prompt,
+              },
+
+              {
+                type: "image_url",
+
+                image_url: {
+                  url:
+                    `data:image/png;base64,` + imageBuffer.toString("base64"),
                 },
-
-                {
-                  type: "image_url",
-
-                  image_url: {
-                    url:
-                      `data:image/png;base64,` +
-                      imageBuffer.toString(
-                        "base64"
-                      ),
-                  },
-                },
-              ],
-            },
-          ],
-        }),
-      }
-    );
+              },
+            ],
+          },
+        ],
+      }),
+    });
   } catch (err) {
-    throw new AppError(
-      "Vision API unreachable",
-      502,
-      "LLM_UNAVAILABLE"
-    );
+    throw new AppError("Vision API unreachable", 502, "LLM_UNAVAILABLE");
   }
 
   if (!response.ok) {
-    const detail =
-      await response.text().catch(() => "");
+    const detail = await response.text().catch(() => "");
 
-    console.error(
-      "Groq vision error:",
-      response.status,
-      detail
-    );
+    console.error("Groq vision error:", response.status, detail);
 
     throw new AppError(
       `Vision API returned ${response.status}`,
       502,
-      "LLM_UNAVAILABLE"
+      "LLM_UNAVAILABLE",
     );
   }
 
-  const data =
-    await response.json();
+  const data = await response.json();
 
-  let content =
-    data.choices?.[0]?.message?.content?.trim();
+  let content = data.choices?.[0]?.message?.content?.trim();
 
   if (!content) {
     throw new AppError(
       "Vision API returned empty transcription",
       502,
-      "LLM_UNAVAILABLE"
+      "LLM_UNAVAILABLE",
     );
   }
 
-  content = content
-    .replace(/<think>[\s\S]*?<\/think>/gi, "")
-    .trim();
+  content = content.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
 
   if (!content) {
     throw new AppError(
       "Vision API returned empty transcription",
       502,
-      "LLM_UNAVAILABLE"
+      "LLM_UNAVAILABLE",
     );
   }
 
@@ -670,10 +674,7 @@ Return only the transcription.
   }
 
   if (!parsed) {
-    console.error(
-      "[OCR LAYOUT] Invalid JSON from vision model:",
-      content
-    );
+    console.error("[OCR LAYOUT] Invalid JSON from vision model:", content);
 
     return {
       text: content,
@@ -682,66 +683,36 @@ Return only the transcription.
   }
 
   try {
-    const text =
-      typeof parsed.text === "string"
-        ? parsed.text.trim()
-        : "";
+    const rawBlocks = Array.isArray(parsed.blocks)
+      ? parsed.blocks
+          .filter((block) => {
+            if (typeof block?.text !== "string") {
+              return false;
+            }
 
-    const rawBlocks =
-      Array.isArray(parsed.blocks)
-        ? parsed.blocks
-            .filter((block) => {
-              if (
-                typeof block?.text !==
-                "string"
-              ) {
-                return false;
-              }
+            if (!Array.isArray(block.bbox)) {
+              return false;
+            }
 
-              if (
-                !Array.isArray(
-                  block.bbox
-                )
-              ) {
-                return false;
-              }
+            if (block.bbox.length !== 4) {
+              return false;
+            }
 
-              if (
-                block.bbox.length !== 4
-              ) {
-                return false;
-              }
-
-              return block.bbox.every(
-                (n) =>
-                  Number.isFinite(
-                    Number(n)
-                  )
-              );
-            })
-            .map((block) => ({
-              text: block.text,
-              bbox: block.bbox.map(
-                Number
-              ),
-            }))
-        : [];
+            return block.bbox.every((n) => Number.isFinite(Number(n)));
+          })
+          .map((block) => ({
+            text: block.text,
+            bbox: block.bbox.map(Number),
+          }))
+      : [];
 
     const heights = rawBlocks
-      .map(
-        (block) =>
-          Number(block.bbox[3]) -
-          Number(block.bbox[1])
-      )
-      .filter(
-        (h) => Number.isFinite(h) && h > 0
-      )
+      .map((block) => Number(block.bbox[3]) - Number(block.bbox[1]))
+      .filter((h) => Number.isFinite(h) && h > 0)
       .sort((a, b) => a - b);
 
     const medianHeight = heights.length
-      ? heights[
-          Math.floor(heights.length / 2)
-        ]
+      ? heights[Math.floor(heights.length / 2)]
       : 0;
 
     const MAX_HEIGHT_MULTIPLIER = 1.6;
@@ -750,33 +721,40 @@ Return only the transcription.
       const [x1, y1, x2, y2] = block.bbox;
       const height = y2 - y1;
 
-      if (
-        medianHeight > 0 &&
-        height >
-          medianHeight *
-            MAX_HEIGHT_MULTIPLIER
-      ) {
+      if (medianHeight > 0 && height > medianHeight * MAX_HEIGHT_MULTIPLIER) {
         return {
           ...block,
-          bbox: [
-            x1,
-            y1,
-            x2,
-            y1 + medianHeight,
-          ],
+          bbox: [x1, y1, x2, y1 + medianHeight],
         };
       }
 
       return block;
     });
 
+    /*
+     * IMPORTANT:
+     *
+     * Do not use parsed.text here.
+     *
+     * The vision model may generate the transcription and
+     * bounding boxes independently. If they differ even
+     * slightly, the grading evidence can be matched against
+     * the wrong physical line.
+     *
+     * The canonical student text is therefore reconstructed
+     * directly from the exact OCR blocks that have coordinates.
+     */
+    const text = blocks
+      .map((block) => block.text.trim())
+      .filter(Boolean)
+      .join("\n")
+      .trim();
+
     console.log(
       `[OCR LAYOUT] ${blocks.length} blocks detected` +
         (medianHeight
-          ? ` (median line height ${medianHeight.toFixed(
-              1
-            )}/1000)`
-          : "")
+          ? ` (median line height ${medianHeight.toFixed(1)}/1000)`
+          : ""),
     );
 
     return {
@@ -784,10 +762,7 @@ Return only the transcription.
       blocks,
     };
   } catch (err) {
-    console.error(
-      "[OCR LAYOUT] Invalid JSON from vision model:",
-      content
-    );
+    console.error("[OCR LAYOUT] Invalid JSON from vision model:", content);
 
     return {
       text: content,
