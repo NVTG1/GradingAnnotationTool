@@ -6,30 +6,27 @@ import AnnotationEditor from "./components/AnnotationEditor";
 import HistoryList from "./components/HistoryList";
 import { fetchHistoryItem, fetchAnnotations } from "./api/gradesenseApi";
 
-// Deliberately no router: the app has exactly five states someone can be
-// in, and a component swap on plain state covers that without pulling in
-// react-router for what would be four routes. If this grows past a
-// single reviewer-facing tool, that's the first dependency to add.
 export default function App() {
-  const [view, setView] = useState("upload"); // upload | loading | result | history | historyDetail
+  const [view, setView] = useState("upload");
   const [gradingResult, setGradingResult] = useState(null);
   const [submission, setSubmission] = useState(null);
   const [annotations, setAnnotations] = useState([]);
   const [error, setError] = useState(null);
 
-  // After POST /api/grade/:id, the response only contains the
-  // GradingResult — not the full submission text. GET /api/history/:id
-  // (keyed by the GradingResult's own _id) is what the backend already
-  // exposes for "full detail on one grading result", so we reuse it here
-  // instead of adding a new endpoint just for this.
   async function loadFullResult(gradingResultId) {
     setView("loading");
     setError(null);
+
     try {
-      const { gradingResult: fullResult, submission: fullSubmission } = await fetchHistoryItem(
-        gradingResultId
+      const {
+        gradingResult: fullResult,
+        submission: fullSubmission,
+      } = await fetchHistoryItem(gradingResultId);
+
+      const { annotations: anns } = await fetchAnnotations(
+        fullSubmission._id
       );
-      const { annotations: anns } = await fetchAnnotations(fullSubmission._id);
+
       setGradingResult(fullResult);
       setSubmission(fullSubmission);
       setAnnotations(anns);
@@ -50,42 +47,103 @@ export default function App() {
 
   function handleNavigate(target) {
     setError(null);
+
     if (target === "upload") {
       setGradingResult(null);
       setSubmission(null);
       setAnnotations([]);
     }
+
     setView(target);
   }
+
+  const pageInfo = {
+    upload: {
+      eyebrow: "Workspace",
+      title: "New submission",
+      description:
+        "Upload a question paper, student answer and model rubric to begin.",
+    },
+    loading: {
+      eyebrow: "Processing",
+      title: "Loading result",
+      description: "Preparing the grading workspace.",
+    },
+    result: {
+      eyebrow: "Review workspace",
+      title: "Grading result",
+      description:
+        "Review the AI assessment and refine annotations before exporting.",
+    },
+    history: {
+      eyebrow: "Archive",
+      title: "Grading history",
+      description:
+        "Browse previous grading results and reopen any submission.",
+    },
+  };
+
+  const currentPage = pageInfo[view] || pageInfo.upload;
 
   return (
     <div className="app-shell">
       <Sidebar view={view} onNavigate={handleNavigate} />
 
       <main className="app-main">
-        {error && <div className="error-banner top-error">{error}</div>}
+        <header className="topbar">
+          <div className="topbar-copy">
+            <span className="eyebrow">{currentPage.eyebrow}</span>
+            <h1>{currentPage.title}</h1>
+            <p>{currentPage.description}</p>
+          </div>
 
-        {view === "upload" && <UploadForm onGraded={handleGraded} />}
+          <div className="topbar-status">
+            <span className="status-dot" />
+            AI grading workspace
+          </div>
+        </header>
 
-        {view === "loading" && (
-          <div className="panel">
-            <p className="muted">Loading result…</p>
+        {error && (
+          <div className="error-banner top-error">
+            <span className="error-icon">!</span>
+            <span>{error}</span>
           </div>
         )}
 
-        {view === "result" && gradingResult && submission && (
-          <div className="panel">
-            <GradingResultView gradingResult={gradingResult} />
-            <AnnotationEditor
-              submissionId={submission._id}
-              studentAnswerText={submission.studentAnswerText}
-              annotations={annotations}
-              setAnnotations={setAnnotations}
-            />
-          </div>
-        )}
+        <section className="page-content">
+          {view === "upload" && (
+            <UploadForm onGraded={handleGraded} />
+          )}
 
-        {view === "history" && <HistoryList onOpen={handleOpenHistoryItem} />}
+          {view === "loading" && (
+            <div className="panel loading-panel">
+              <div className="loading-spinner" />
+              <h2>Loading result…</h2>
+              <p className="muted">
+                Fetching the submission, grading result and annotations.
+              </p>
+            </div>
+          )}
+
+          {view === "result" && gradingResult && submission && (
+            <div className="result-workspace">
+              <div className="panel result-panel">
+                <GradingResultView gradingResult={gradingResult} />
+              </div>
+
+              <AnnotationEditor
+                submissionId={submission._id}
+                studentAnswerText={submission.studentAnswerText}
+                annotations={annotations}
+                setAnnotations={setAnnotations}
+              />
+            </div>
+          )}
+
+          {view === "history" && (
+            <HistoryList onOpen={handleOpenHistoryItem} />
+          )}
+        </section>
       </main>
     </div>
   );

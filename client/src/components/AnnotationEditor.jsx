@@ -37,6 +37,34 @@ export default function AnnotationEditor({
   const [error, setError] = useState(null);
   const [saving, setSaving] = useState(false);
   const [hoveredAnnotationId, setHoveredAnnotationId] = useState(null);
+  const [selectedAnnotationId, setSelectedAnnotationId] = useState(null);
+
+  // Drag/resize on the page image saves immediately (no modal, no
+  // re-grading) — this is what satisfies "move it, resize it" as a
+  // direct manipulation instead of only editable via typed-in numbers.
+  async function handleQuickPositionUpdate(annotationId, updates) {
+    const previous = annotations;
+
+    // Optimistic update so the box doesn't jump/lag while the PATCH
+    // is in flight.
+    setAnnotations((prev) =>
+      prev.map((annotation) =>
+        annotation._id === annotationId
+          ? { ...annotation, ...updates }
+          : annotation
+      )
+    );
+
+    try {
+      await updateAnnotation(submissionId, annotationId, updates);
+    } catch (err) {
+      // Roll back on failure and surface why.
+      setAnnotations(previous);
+      setError(
+        err.message || "Could not save the new position."
+      );
+    }
+  }
 
   function openAddWindow() {
     setError(null);
@@ -204,7 +232,19 @@ export default function AnnotationEditor({
           annotations={annotations}
           hoveredAnnotationId={hoveredAnnotationId}
           onHoverAnnotation={setHoveredAnnotationId}
+          editable
+          selectedAnnotationId={selectedAnnotationId}
+          onSelectAnnotation={setSelectedAnnotationId}
+          onAnnotationUpdate={handleQuickPositionUpdate}
         />
+
+        {selectedAnnotationId && (
+          <p className="annotation-answer-preview-hint">
+            Drag the highlighted box to move it, or drag its corner
+            handle to resize. Click elsewhere to deselect.
+          </p>
+        )}
+
 
         <details className="annotation-answer-text-toggle">
           <summary>Show extracted text</summary>
@@ -250,7 +290,9 @@ export default function AnnotationEditor({
             annotation={annotation}
             index={index}
             isHovered={hoveredAnnotationId === annotation._id}
+            isSelected={selectedAnnotationId === annotation._id}
             onHover={setHoveredAnnotationId}
+            onSelect={setSelectedAnnotationId}
             onEdit={() => openEditWindow(annotation)}
             onDelete={() => handleDelete(annotation._id)}
           />
@@ -274,7 +316,9 @@ function AnnotationRow({
   annotation,
   index,
   isHovered,
+  isSelected,
   onHover,
+  onSelect,
   onEdit,
   onDelete,
 }) {
@@ -282,14 +326,20 @@ function AnnotationRow({
     TYPES.find((type) => type.value === annotation.type)?.label ||
     annotation.type;
 
+  const hasPosition = annotation.pageNumber != null;
+
   return (
     <div
       className={
         "annotation-row" +
-        (isHovered ? " annotation-row-active" : "")
+        (isHovered ? " annotation-row-active" : "") +
+        (isSelected ? " annotation-row-selected" : "")
       }
       onMouseEnter={() => onHover?.(annotation._id)}
       onMouseLeave={() => onHover?.(null)}
+      onClick={() => {
+        if (hasPosition) onSelect?.(annotation._id);
+      }}
     >
       <div
         className={`ann-swatch ann-${annotation.type}`}
@@ -327,7 +377,7 @@ function AnnotationRow({
           )}
         </div>
 
-        {annotation.pageNumber != null && (
+        {hasPosition ? (
           <div className="annotation-row-coordinates">
             Page {annotation.pageNumber}
             {" · "}
@@ -337,6 +387,14 @@ function AnnotationRow({
             {" · "}
             {Math.round(annotation.width ?? 0)} ×{" "}
             {Math.round(annotation.height ?? 0)}
+            {" · "}
+            <span className="annotation-row-position-hint">
+              click to move/resize on the page
+            </span>
+          </div>
+        ) : (
+          <div className="annotation-row-coordinates muted">
+            Not positioned on the page — edit to add coordinates.
           </div>
         )}
       </div>
@@ -345,7 +403,10 @@ function AnnotationRow({
         <button
           className="btn-ghost"
           type="button"
-          onClick={onEdit}
+          onClick={(event) => {
+            event.stopPropagation();
+            onEdit?.();
+          }}
         >
           Edit
         </button>
@@ -353,7 +414,10 @@ function AnnotationRow({
         <button
           className="btn-ghost btn-danger"
           type="button"
-          onClick={onDelete}
+          onClick={(event) => {
+            event.stopPropagation();
+            onDelete?.();
+          }}
         >
           Delete
         </button>
